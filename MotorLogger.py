@@ -170,7 +170,7 @@ class MotorLoggerGUI:
         ttk.Label(read, textvariable=self.cmd_str,  width=22, anchor="w").grid(row=1, column=1, padx=6)
 
         # Per-channel scaling ------------------------------------------------
-        ttk.Label(parms, text="Channel multipliers:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        ttk.Label(parms, text="Channel Scaling:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
         tbl = ttk.Frame(parms)
         tbl.grid(row=5, column=0, columnspan=2, sticky="w")
 
