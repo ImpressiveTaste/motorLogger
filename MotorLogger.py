@@ -157,8 +157,9 @@ class MotorLoggerGUI:
         btn = ttk.Frame(main); btn.pack(pady=(6, 2))
         self.start_btn = ttk.Button(btn, text="START ▶", width=12, command=self._start_capture, state="disabled"); self.start_btn.pack(side="left", padx=2)
         self.stop_btn  = ttk.Button(btn, text="STOP ■",  width=12, command=self._stop_capture,  state="disabled"); self.stop_btn.pack(side="left", padx=2)
-        self.plot_btn  = ttk.Button(btn, text="Plot",     width=8,  command=self._plot,          state="disabled"); self.plot_btn.pack(side="left", padx=2)
-        self.save_btn  = ttk.Button(btn, text="Save…",    width=8,  command=self._save,          state="disabled"); self.save_btn.pack(side="left", padx=2)
+        self.curr_btn  = ttk.Button(btn, text="Currents", width=9, command=self._plot_currents, state="disabled"); self.curr_btn.pack(side="left", padx=2)
+        self.omega_btn = ttk.Button(btn, text="Omega",    width=8, command=self._plot_omega,    state="disabled"); self.omega_btn.pack(side="left", padx=2)
+        self.save_btn  = ttk.Button(btn, text="Save…",    width=8, command=self._save,          state="disabled"); self.save_btn.pack(side="left", padx=2)
 
         # Status / live RPM
         self.status = tk.StringVar(value="Idle – not connected")
@@ -229,7 +230,8 @@ class MotorLoggerGUI:
         self._stop_capture()
         self.scope.disconnect()
         self.connected = False
-        for b in (self.start_btn, self.stop_btn, self.plot_btn, self.save_btn): b.config(state="disabled")
+        for b in (self.start_btn, self.stop_btn, self.curr_btn, self.omega_btn, self.save_btn):
+            b.config(state="disabled")
         self.conn_btn.config(text="Connect"); self.status.set("Disconnected")
 
     # ── Capture control ───────────────────────────────────────────────────
@@ -262,7 +264,7 @@ class MotorLoggerGUI:
         self._cap_thread.start()
 
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
-        self.plot_btn.config(state="disabled");  self.save_btn.config(state="disabled")
+        self.curr_btn.config(state="disabled"); self.omega_btn.config(state="disabled"); self.save_btn.config(state="disabled")
 
     def _stop_capture(self): self._stop_flag.set()
 
@@ -309,7 +311,7 @@ class MotorLoggerGUI:
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
         if self.data["t"]:
-            self.plot_btn.config(state="normal"); self.save_btn.config(state="normal")
+            self.curr_btn.config(state="normal"); self.omega_btn.config(state="normal"); self.save_btn.config(state="normal")
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
@@ -333,23 +335,46 @@ class MotorLoggerGUI:
         self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui)
 
     # ── Plot & save ──────────────────────────────────────────────────────
-    def _plot(self):
+    def _plot_currents(self):
         if not self.data["t"]:
             messagebox.showinfo("No data", "Nothing captured yet"); return
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
-        fig, ax = plt.subplots(figsize=(8,5)); t=self.data["t"]
+        fig, ax = plt.subplots(figsize=(8, 5))
+        t = self.data["t"]
+        # --- Currents plot -------------------------------------------------
         for k, lbl in (
-            ("idqCmd_q","idqCmd.q [A]"),
-            ("Idq_q",   "idq.q [A]"),
-            ("Idq_d",   "idq.d [A]"),
-            ("OmegaElectrical","omegaElectrical [RPM]"),
-            ("OmegaCmd","omegaCmd [RPM]"),
+            ("idqCmd_q", "idqCmd.q [A]"),
+            ("Idq_q",    "idq.q [A]"),
+            ("Idq_d",    "idq.d [A]"),
         ):
             ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
-        ax.set_xlabel("Time [s]"); ax.set_ylabel("Scaled units")
-        ax.grid(True, linestyle=":", linewidth=0.5); ax.legend(fontsize="small")
-        win = tk.Toplevel(self.root); win.title("Captured traces")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Current [scaled]")
+        ax.grid(True, linestyle=":", linewidth=0.5)
+        ax.legend(fontsize="small")
+
+        win = tk.Toplevel(self.root); win.title("Currents")
+        FigureCanvasTkAgg(fig, master=win).get_tk_widget().pack(fill="both", expand=True)
+        fig.tight_layout()
+
+    def _plot_omega(self):
+        if not self.data["t"]:
+            messagebox.showinfo("No data", "Nothing captured yet"); return
+        if plt is None:
+            messagebox.showerror("Plot", "Install matplotlib"); return
+        fig, ax = plt.subplots(figsize=(8, 5))
+        t = self.data["t"]
+        for k, lbl in (
+            ("OmegaElectrical", "omegaElectrical [RPM]"),
+            ("OmegaCmd",        "omegaCmd [RPM]"),
+        ):
+            ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Omega [scaled]")
+        ax.grid(True, linestyle=":", linewidth=0.5)
+        ax.legend(fontsize="small")
+        win = tk.Toplevel(self.root); win.title("Omega")
         FigureCanvasTkAgg(fig, master=win).get_tk_widget().pack(fill="both", expand=True)
         fig.tight_layout()
 
@@ -391,4 +416,7 @@ class MotorLoggerGUI:
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    MotorLoggerGUI().root.mainloop()
+    try:
+        MotorLoggerGUI().root.mainloop()
+    except KeyboardInterrupt:
+        pass
