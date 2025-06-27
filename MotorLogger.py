@@ -338,17 +338,30 @@ class MotorLoggerGUI:
             messagebox.showinfo("No data", "Nothing captured yet"); return
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
-        fig, ax = plt.subplots(figsize=(8,5)); t=self.data["t"]
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+        t = self.data["t"]
+        # --- Currents plot -------------------------------------------------
         for k, lbl in (
-            ("idqCmd_q","idqCmd.q [A]"),
-            ("Idq_q",   "idq.q [A]"),
-            ("Idq_d",   "idq.d [A]"),
-            ("OmegaElectrical","omegaElectrical [RPM]"),
-            ("OmegaCmd","omegaCmd [RPM]"),
+            ("idqCmd_q", "idqCmd.q [A]"),
+            ("Idq_q",    "idq.q [A]"),
+            ("Idq_d",    "idq.d [A]"),
         ):
-            ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
-        ax.set_xlabel("Time [s]"); ax.set_ylabel("Scaled units")
-        ax.grid(True, linestyle=":", linewidth=0.5); ax.legend(fontsize="small")
+            ax1.plot(t, self.data[k], label=lbl, linewidth=0.9)
+        ax1.set_ylabel("Current [scaled]")
+        ax1.grid(True, linestyle=":", linewidth=0.5)
+        ax1.legend(fontsize="small")
+
+        # --- Omega plot ---------------------------------------------------
+        for k, lbl in (
+            ("OmegaElectrical", "omegaElectrical [RPM]"),
+            ("OmegaCmd",        "omegaCmd [RPM]"),
+        ):
+            ax2.plot(t, self.data[k], label=lbl, linewidth=0.9)
+        ax2.set_xlabel("Time [s]")
+        ax2.set_ylabel("Omega [scaled]")
+        ax2.grid(True, linestyle=":", linewidth=0.5)
+        ax2.legend(fontsize="small")
+
         win = tk.Toplevel(self.root); win.title("Captured traces")
         FigureCanvasTkAgg(fig, master=win).get_tk_widget().pack(fill="both", expand=True)
         fig.tight_layout()
