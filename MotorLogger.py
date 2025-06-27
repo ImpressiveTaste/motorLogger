@@ -110,6 +110,7 @@ class MotorLoggerGUI:
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._poll_job: str | None = None
         self._poll_gui()
 
     # ── GUI layout ─────────────────────────────────────────────────────────
@@ -287,8 +288,23 @@ class MotorLoggerGUI:
                 next_t += self.ts
 
             self.stop_var.set_value(1)
+
+            stop_end = time.perf_counter() + 2.0
+            while time.perf_counter() < stop_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0)); continue
+                ts = now - t0; self.data["t"].append(ts)
+                for k, var in self.mon_vars.items():
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
         finally:
-            self.root.after(0, self._worker_done)
+            if self.root.winfo_exists():
+                self.root.after(0, self._worker_done)
 
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
@@ -300,8 +316,10 @@ class MotorLoggerGUI:
 
     # ── Live RPM polling ─────────────────────────────────────────────────
     def _poll_gui(self):
+        if not self.root.winfo_exists():
+            return
         if self._cap_thread and self._cap_thread.is_alive():
-            self.root.after(self.GUI_POLL_MS, self._poll_gui); return
+            self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui); return
         if self.connected:
             try:
                 cnt_meas = self.meas_var.get_value(); cnt_cmd = self.cmd_var.get_value()
@@ -312,7 +330,7 @@ class MotorLoggerGUI:
                 self.meas_str.set("—"); self.cmd_str.set("—")
         else:
             self.meas_str.set("—"); self.cmd_str.set("—")
-        self.root.after(self.GUI_POLL_MS, self._poll_gui)
+        self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui)
 
     # ── Plot & save ──────────────────────────────────────────────────────
     def _plot(self):
@@ -359,7 +377,15 @@ class MotorLoggerGUI:
     # ── Cleanup ──────────────────────────────────────────────────────────
     def _on_close(self):
         try:
-            self._stop_flag.set(); self.scope.disconnect()
+            self._stop_flag.set()
+            if self._poll_job is not None:
+                try:
+                    self.root.after_cancel(self._poll_job)
+                except Exception:
+                    pass
+            if self._cap_thread and self._cap_thread.is_alive():
+                self._cap_thread.join(timeout=2)
+            self.scope.disconnect()
         finally:
             self.root.destroy()
 
