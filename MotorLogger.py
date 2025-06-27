@@ -169,12 +169,10 @@ class MotorLoggerGUI:
         ttk.Label(read, textvariable=self.meas_str, width=22, anchor="w").grid(row=0, column=1, padx=6)
         ttk.Label(read, textvariable=self.cmd_str,  width=22, anchor="w").grid(row=1, column=1, padx=6)
 
-        # 2) Scaling tab ----------------------------------------------------
-        scale_tab = ttk.Frame(notebook)
-        notebook.add(scale_tab, text="Scaling")
-
-        ttk.Label(scale_tab, text="Enter multiplier for each channel (default 1.0):").pack(anchor="w", padx=10, pady=(10, 2))
-        tbl = ttk.Frame(scale_tab); tbl.pack(padx=10, pady=4, anchor="w")
+        # Per-channel scaling ------------------------------------------------
+        ttk.Label(parms, text="Channel multipliers:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        tbl = ttk.Frame(parms)
+        tbl.grid(row=5, column=0, columnspan=2, sticky="w")
 
         self.scale_vars: Dict[str, tk.StringVar] = {}
         for r, (name, _) in enumerate(VAR_PATHS.items()):
