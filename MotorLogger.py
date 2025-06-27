@@ -414,7 +414,11 @@ class MotorLoggerGUI:
                 self._cap_thread.join(timeout=2)
             self.scope.disconnect()
         finally:
-            self.root.destroy()
+            if self.root.winfo_exists():
+                try:
+                    self.root.destroy()
+                except tk.TclError:
+                    pass
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
