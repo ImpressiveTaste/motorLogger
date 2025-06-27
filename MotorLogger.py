@@ -256,7 +256,9 @@ class MotorLoggerGUI:
                 self.scale_factors[k] = 1.0
 
         # Prep
-        self.data = {k: [] for k in VAR_PATHS}; self.data["t"]=[]
+        self.data = {k: [] for k in VAR_PATHS}
+        self.data["t"] = []
+        self.data["MotorRunning"] = []  # 1 when spinning, 0 after stop command
         self._stop_flag.clear(); self.ts = dt_ms / 1000.0
         self.cmd_var.set_value(int(round(rpm/scale)))
 
@@ -280,7 +282,7 @@ class MotorLoggerGUI:
                 now = time.perf_counter()
                 if now < next_t:
                     time.sleep(max(next_t - now, 0)); continue
-                ts = now - t0; self.data["t"].append(ts)
+                ts = now - t0; self.data["t"].append(ts); self.data["MotorRunning"].append(1)
                 # Fetch vars
                 for k, var in self.mon_vars.items():
                     try:
@@ -297,7 +299,7 @@ class MotorLoggerGUI:
                 now = time.perf_counter()
                 if now < next_t:
                     time.sleep(max(next_t - now, 0)); continue
-                ts = now - t0; self.data["t"].append(ts)
+                ts = now - t0; self.data["t"].append(ts); self.data["MotorRunning"].append(0)
                 for k, var in self.mon_vars.items():
                     try:
                         raw = var.get_value()
