@@ -23,6 +23,7 @@ from __future__ import annotations
 import pathlib
 import threading
 import time
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Union
@@ -57,6 +58,20 @@ if USE_SCOPE:
 # shorter than ``MIN_DELAY_PER_VAR_MS * number_of_selected_vars``.
 ENFORCE_SAMPLE_LIMIT = True
 MIN_DELAY_PER_VAR_MS = 3  # ms added per variable during capture
+
+# ─── High-precision sleep ----------------------------------------------------
+def _precise_sleep(delay: float) -> None:
+    """Sleep with improved granularity, especially on Windows."""
+    if delay <= 0:
+        return
+    if sys.platform.startswith("win"):
+        target = time.perf_counter() + delay
+        if delay > 0.002:
+            time.sleep(delay - 0.001)
+        while time.perf_counter() < target:
+            pass
+    else:
+        time.sleep(delay)
 
 # ─── Variable paths we want to log ───────────────────────────────────────────
 VAR_PATHS = {
@@ -322,7 +337,7 @@ class MotorLoggerGUI:
             while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
                 now = time.perf_counter()
                 if now < next_t:
-                    time.sleep(max(next_t - now, 0))
+                    _precise_sleep(max(next_t - now, 0))
                     continue
                 ts = now - t0
                 self.data["t"].append(ts)
@@ -345,7 +360,7 @@ class MotorLoggerGUI:
             while not self._stop_flag.is_set() and time.perf_counter() < run_end:
                 now = time.perf_counter()
                 if now < next_t:
-                    time.sleep(max(next_t - now, 0))
+                    _precise_sleep(max(next_t - now, 0))
                     continue
                 ts = now - t0
                 self.data["t"].append(ts)
@@ -366,7 +381,7 @@ class MotorLoggerGUI:
             while time.perf_counter() < stop_end:
                 now = time.perf_counter()
                 if now < next_t:
-                    time.sleep(max(next_t - now, 0))
+                    _precise_sleep(max(next_t - now, 0))
                     continue
                 ts = now - t0
                 self.data["t"].append(ts)
