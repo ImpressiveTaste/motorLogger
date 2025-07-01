@@ -380,8 +380,11 @@ class MotorLoggerGUI:
                         self.data[k].append(float("nan"))
                 next_t += self.ts
         finally:
-            if self.root.winfo_exists():
-                self.root.after(0, self._worker_done)
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(0, self._worker_done)
+            except tk.TclError:
+                pass
 
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
@@ -403,7 +406,10 @@ class MotorLoggerGUI:
 
     # ── Live RPM polling ─────────────────────────────────────────────────
     def _poll_gui(self):
-        if not self.root.winfo_exists():
+        try:
+            if not self.root.winfo_exists():
+                return
+        except tk.TclError:
             return
         if self._cap_thread and self._cap_thread.is_alive():
             self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui); return
@@ -497,11 +503,11 @@ class MotorLoggerGUI:
                 self._cap_thread.join(timeout=2)
             self.scope.disconnect()
         finally:
-            if self.root.winfo_exists():
-                try:
+            try:
+                if self.root.winfo_exists():
                     self.root.destroy()
-                except tk.TclError:
-                    pass
+            except tk.TclError:
+                pass
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
