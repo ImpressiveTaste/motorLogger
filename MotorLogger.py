@@ -404,7 +404,8 @@ class MotorLoggerGUI:
             for k in self.selected_vars:
                 var = self.mon_vars[k]
                 self.scope.add_scope_channel(var)
-            self.scope.set_sample_time(self.ts * 1000.0)
+            # Cast to int to avoid bitwise errors inside mchplnet
+            self.scope.set_sample_time(int(round(self.ts * 1000.0)))
             self.scope.request_scope_data()
 
             self._sample_idx = 0
