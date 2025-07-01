@@ -481,7 +481,14 @@ class MotorLoggerGUI:
                 if pd is None: raise RuntimeError("pandas not installed")
                 pd.DataFrame(self.data).to_excel(fn, index=False)
         except Exception as e:
-            messagebox.showerror("Save", str(e)); return
+            try:
+                if self.root.winfo_exists():
+                    messagebox.showerror("Save", str(e))
+                else:
+                    print(f"Save error: {e}")
+            except Exception:
+                print(f"Save error: {e}")
+            return
         messagebox.showinfo("Saved", fn)
 
     # ── Cleanup ──────────────────────────────────────────────────────────
@@ -497,7 +504,11 @@ class MotorLoggerGUI:
                 self._cap_thread.join(timeout=2)
             self.scope.disconnect()
         finally:
-            if self.root.winfo_exists():
+            try:
+                exists = self.root.winfo_exists()
+            except Exception:
+                exists = False
+            if exists:
                 try:
                     self.root.destroy()
                 except tk.TclError:
