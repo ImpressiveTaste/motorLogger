@@ -14,6 +14,8 @@ pyX2Cscope motor logger GUI  –  with per-channel scaling
 • New **Scaling** tab lets you type a multiplier for each variable
   (default 1.0).  The capture thread applies it on the fly, so plots
   and saved files show scaled values.
+• Uses the X2CScope hardware scope for block-based capture, enabling
+  faster and more precise sampling (see the pyX2Cscope examples).
 
 Tested with: pyX2Cscope 0.4.4, Python 3.11, Windows 10.
 """
