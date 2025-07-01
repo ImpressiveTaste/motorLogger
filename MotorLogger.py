@@ -66,8 +66,8 @@ def _precise_sleep(delay: float) -> None:
         return
     if sys.platform.startswith("win"):
         target = time.perf_counter() + delay
-        if delay > 0.002:
-            time.sleep(delay - 0.001)
+        if delay > 0.0015:
+            time.sleep(delay - 0.0005)
         while time.perf_counter() < target:
             pass
     else:
@@ -404,7 +404,8 @@ class MotorLoggerGUI:
             for k in self.selected_vars:
                 var = self.mon_vars[k]
                 self.scope.add_scope_channel(var)
-            self.scope.set_sample_time(self.ts * 1000.0)
+            # ``set_sample_time`` expects an integer value in microseconds
+            self.scope.set_sample_time(int(round(self.ts * 1000.0)))
             self.scope.request_scope_data()
 
             self._sample_idx = 0
