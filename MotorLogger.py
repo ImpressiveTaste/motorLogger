@@ -14,8 +14,7 @@ pyX2Cscope motor logger GUI  –  with per-channel scaling
 • New **Scaling** tab lets you type a multiplier for each variable
   (default 1.0).  The capture thread applies it on the fly, so plots
   and saved files show scaled values.
-• Uses the X2CScope hardware scope for block-based capture, enabling
-  faster and more precise sampling (see the pyX2Cscope examples).
+• Uses simple polling for improved time accuracy.
 
 Tested with: pyX2Cscope 0.4.4, Python 3.11, Windows 10.
 """
@@ -369,67 +368,35 @@ class MotorLoggerGUI:
     def _stop_capture(self): self._stop_flag.set()
 
     def _worker(self, dur: float):
-        """Background capture using X2CScope channels."""
+        """Background capture using simple polling."""
         PRE_START = 0.5      # capture before sending run command [s]
         POST_STOP = 1.0      # capture after stop command [s]
-
-        def _capture_block(running: int) -> bool:
-            """Fetch a block of samples from the scope."""
-            if not self.scope.is_scope_data_ready():
-                return False
-            block = self.scope.get_scope_channel_data(valid_data=False)
-            self.scope.request_scope_data()
-            if not block:
-                return False
-            try:
-                first = next(iter(block.values()))
-                n = len(first)
-            except Exception:
-                return False
-            for i in range(n):
-                self.data["t"].append(self._sample_idx * self.ts)
-                self.data["MotorRunning"].append(running)
-                for ch, k in enumerate(self.selected_vars):
-                    try:
-                        # Channel keys vary across pyX2Cscope versions.
-                        # Look up by multiple possibilities to avoid
-                        # falling back to the first channel for every entry.
-                        var = self.mon_vars.get(k)
-                        val_block = (
-                            block.get(ch)
-                            or block.get(ch + 1)
-                            or (block.get(var) if var is not None else None)
-                            or block.get(VAR_PATHS.get(k, ""))
-                            or first
-                        )
-                        val = val_block[i]
-                        self.data[k].append(val * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                self._sample_idx += 1
-            return True
 
         try:
             self.status.set("Running + logging…")
             self.stop_var.set_value(0)
 
-            # configure scope channels
-            self.scope.clear_scope_channels()
-            for k in self.selected_vars:
-                var = self.mon_vars[k]
-                self.scope.add_scope_channel(var)
-            # Cast to int to avoid bitwise errors inside mchplnet
-            self.scope.set_sample_time(int(round(self.ts * 1000.0)))
-            self.scope.request_scope_data()
-
-            self._sample_idx = 0
-            self._start_time = time.perf_counter()
-            run_cmd_time = self._start_time + PRE_START
+            t0 = time.perf_counter()
+            next_t = t0
+            run_cmd_time = t0 + PRE_START
 
             # ── Capture before starting motor ──────────────────────────
             while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
-                if not _capture_block(0):
-                    _precise_sleep(self.ts)
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
 
             if not self._stop_flag.is_set():
                 self.run_var.set_value(1)
@@ -438,16 +405,42 @@ class MotorLoggerGUI:
 
             # ── Capture while motor running ───────────────────────────
             while not self._stop_flag.is_set() and time.perf_counter() < run_end:
-                if not _capture_block(1):
-                    _precise_sleep(self.ts)
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(1)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
 
             self.stop_var.set_value(1)
 
             stop_end = time.perf_counter() + POST_STOP
             # ── Capture after stop command ────────────────────────────
             while time.perf_counter() < stop_end:
-                if not _capture_block(0):
-                    _precise_sleep(self.ts)
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
         finally:
             if self.root.winfo_exists():
                 self.root.after(0, self._worker_done)
