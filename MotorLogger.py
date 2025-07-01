@@ -115,9 +115,6 @@ class MotorLoggerGUI:
         self.data: Dict[str, List[float]] = {}
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
         self.selected_vars = list(VAR_PATHS)
-        self.channel_names = list(VAR_PATHS)
-        self._channel_map = {n: i for i, n in enumerate(self.channel_names)}
-        self._rows: List[List[float]] = []
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -237,13 +234,11 @@ class MotorLoggerGUI:
             self.meas_var = self.scope.get_variable(VEL_MEAS_VAR)
             self.run_var  = self.scope.get_variable(RUN_REQ_VAR)
             self.stop_var = self.scope.get_variable(STOP_REQ_VAR)
-            missing = [k for k in VAR_PATHS.values() if self.scope.get_variable(k) is None]
+            self.mon_vars = {k: self.scope.get_variable(p) for k, p in VAR_PATHS.items()}
+            missing = [k for k, v in self.mon_vars.items() if v is None]
             if missing:
                 raise RuntimeError("Symbols not in ELF:\n  • " + "\n  • ".join(missing))
             self.hwui.set_value(0)  # disable on-board HMI
-            if USE_SCOPE:
-                for path in VAR_PATHS.values():
-                    self.scope._scope.add_scope_channel(self.scope._scope.get_variable(path))
         except Exception as e:
             messagebox.showerror("Connect", str(e)); self.scope.disconnect(); return
         # UI
@@ -285,18 +280,21 @@ class MotorLoggerGUI:
         if not self.selected_vars:
             messagebox.showwarning("Variables", "Select at least one variable")
             return
-        self.data = {}
-        self._rows = []
+        if ENFORCE_SAMPLE_LIMIT:
+            min_dt = MIN_DELAY_PER_VAR_MS * len(self.selected_vars)
+            if dt_ms < min_dt:
+                messagebox.showwarning(
+                    "Sample interval",
+                    f"Minimum allowed interval is {min_dt:.0f} ms for {len(self.selected_vars)} vars",
+                )
+                return
+        self.data = {k: [] for k in self.selected_vars}
+        self.data["t"] = []
+        self.data["MotorRunning"] = []  # 1 when spinning, 0 after stop command
         self._stop_flag.clear(); self.ts = dt_ms / 1000.0
         self.cmd_var.set_value(int(round(rpm/scale)))
-        if USE_SCOPE:
-            # Older versions of pyX2Cscope expect an integer sample time.
-            # Ensure we pass an int to avoid a bitwise operation error in
-            # the library when a float is used.
-            self.scope._scope.set_sample_time(int(dt_ms))
-        max_samples = int(dur * 1000 / dt_ms)
 
-        self._cap_thread = threading.Thread(target=self._worker, args=(max_samples, self.ts), daemon=True)
+        self._cap_thread = threading.Thread(target=self._worker, args=(dur,), daemon=True)
         self._cap_thread.start()
 
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
@@ -307,8 +305,8 @@ class MotorLoggerGUI:
 
     def _stop_capture(self): self._stop_flag.set()
 
-    def _worker(self, max_samples: int, ts: float):
-        """Background capture using the hardware scope buffer."""
+    def _worker(self, dur: float):
+        """Background capture."""
         PRE_START = 0.5      # capture before sending run command [s]
         POST_STOP = 1.0      # capture after stop command [s]
 
@@ -316,85 +314,78 @@ class MotorLoggerGUI:
             self.status.set("Running + logging…")
             self.stop_var.set_value(0)
 
-            scope = self.scope._scope if USE_SCOPE else None
-            if scope:
-                scope.request_scope_data()
+            t0 = time.perf_counter()
+            next_t = t0
+            run_cmd_time = t0 + PRE_START
 
-            self._sample_idx = 0
-            run_cmd_time = time.perf_counter() + PRE_START
-            run_end = run_cmd_time + max_samples * ts
-
-            def _capture_block(running: int) -> bool:
-                if not scope or not scope.is_scope_data_ready():
-                    return False
-                block = scope.get_scope_channel_data(valid_data=False)
-                scope.request_scope_data()
-                if not block:
-                    return False
-                try:
-                    first = next(iter(block.values()))
-                    n = len(first)
-                except Exception:
-                    return False
-                for i in range(n):
-                    row = [self._sample_idx * ts, running]
-                    for ch in range(len(self.channel_names)):
-                        try:
-                            row.append(block.get(ch, first)[i])
-                        except Exception:
-                            row.append(float("nan"))
-                    self._rows.append(row)
-                    self._sample_idx += 1
-                    if self._sample_idx >= max_samples:
-                        break
-                return True
-
-            # ── Capture before starting motor ─────────────────────────-
-            while (not self._stop_flag.is_set() and
-                   self._sample_idx < max_samples and
-                   time.perf_counter() < run_cmd_time):
-                if not _capture_block(0):
-                    time.sleep(ts)
-                if self._sample_idx >= max_samples:
-                    break
+            # ── Pre-start capture ───────────────────────────────────────
+            while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
 
             if not self._stop_flag.is_set():
                 self.run_var.set_value(1)
 
-            # ── Capture while motor running ───────────────────────────
-            while (not self._stop_flag.is_set() and
-                   self._sample_idx < max_samples and
-                   time.perf_counter() < run_end):
-                if not _capture_block(1):
-                    time.sleep(ts)
-                if self._sample_idx >= max_samples:
-                    break
+            run_end = run_cmd_time + dur
+
+            # ── Main capture while motor running ───────────────────────
+            while not self._stop_flag.is_set() and time.perf_counter() < run_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(1)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
 
             self.stop_var.set_value(1)
 
             stop_end = time.perf_counter() + POST_STOP
-            # ── Capture after stop command ────────────────────────────
-            while (self._sample_idx < max_samples and
-                   time.perf_counter() < stop_end):
-                if not _capture_block(0):
-                    time.sleep(ts)
-                if self._sample_idx >= max_samples:
-                    break
+            # ── Capture after issuing stop command ─────────────────────
+            while time.perf_counter() < stop_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
         finally:
             if self.root.winfo_exists():
                 self.root.after(0, self._worker_done)
 
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
-        self.data = {}
-        if self._rows:
-            self.data["t"] = [r[0] for r in self._rows]
-            self.data["MotorRunning"] = [r[1] for r in self._rows]
-            for k in self.selected_vars:
-                idx = self._channel_map.get(k)
-                if idx is not None:
-                    self.data[k] = [r[2 + idx] * self.scale_factors[k] for r in self._rows]
-        if self.data.get("t"):
+        if self.data["t"]:
             if any(k in self.data for k in ("idqCmd_q", "Idq_q", "Idq_d")):
                 self.curr_btn.config(state="normal")
             else:
