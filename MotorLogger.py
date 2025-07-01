@@ -53,9 +53,9 @@ if USE_SCOPE:
 
 # ─── Sample interval limitations ----------------------------------------------
 # Each monitored variable introduces roughly 3 ms of communication overhead.
-# When ``ENFORCE_SAMPLE_LIMIT`` is ``True``, the GUI blocks sample intervals
-# shorter than ``MIN_DELAY_PER_VAR_MS * number_of_selected_vars``.
-ENFORCE_SAMPLE_LIMIT = True
+# When the sample guard is enabled, the GUI blocks intervals shorter than
+# ``MIN_DELAY_PER_VAR_MS * number_of_selected_vars``.
+DEFAULT_ENFORCE_SAMPLE_LIMIT = True
 MIN_DELAY_PER_VAR_MS = 3  # ms added per variable during capture
 
 # ─── Variable paths we want to log ───────────────────────────────────────────
@@ -115,6 +115,7 @@ class MotorLoggerGUI:
         self.data: Dict[str, List[float]] = {}
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
         self.selected_vars = list(VAR_PATHS)
+        self.enforce_limit = DEFAULT_ENFORCE_SAMPLE_LIMIT
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -202,6 +203,14 @@ class MotorLoggerGUI:
             ent.grid(row=r, column=2, sticky="w", padx=6)
             self._lock_widgets.append(ent)
 
+        # Experimental: toggle sample guard
+        self.guard_btn = ttk.Button(
+            parms,
+            text="⚠ Experimental: remove mS guard",
+            command=self._toggle_guard,
+        )
+        self.guard_btn.grid(row=6, column=0, columnspan=2, pady=(6, 2))
+
     # ── Helper utilities ───────────────────────────────────────────────────
     @staticmethod
     def _ports():
@@ -216,6 +225,15 @@ class MotorLoggerGUI:
     def _browse_elf(self):
         fn = filedialog.askopenfilename(title="Select ELF", filetypes=[("ELF","*.elf"), ("All","*.*")])
         if fn: self.elf_path.set(fn)
+
+    def _toggle_guard(self):
+        """Toggle enforcement of the sample interval safeguard."""
+        self.enforce_limit = not self.enforce_limit
+        if self.enforce_limit:
+            txt = "⚠ Experimental: remove mS guard"
+        else:
+            txt = "Re-enable mS guard"
+        self.guard_btn.config(text=txt)
 
     # ── Connection handling ───────────────────────────────────────────────
     def _toggle_conn(self): self._disconnect() if self.connected else self._connect()
@@ -280,7 +298,7 @@ class MotorLoggerGUI:
         if not self.selected_vars:
             messagebox.showwarning("Variables", "Select at least one variable")
             return
-        if ENFORCE_SAMPLE_LIMIT:
+        if self.enforce_limit:
             min_dt = MIN_DELAY_PER_VAR_MS * len(self.selected_vars)
             if dt_ms < min_dt:
                 messagebox.showwarning(

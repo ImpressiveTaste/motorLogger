@@ -1,6 +1,6 @@
 # pyX2Cscope Motor Logger GUI
 
-**Last updated:** July 15, 2025
+**Last updated:** August 1, 2025
 
 This project provides a Python GUI built with `tkinter` that interfaces with [pyX2Cscope](https://github.com/X2Cscope/pyx2cscope). It can connect to a Microchip MCAF target, start or stop the motor and log multiple variables with optional per‑channel scaling.
 
@@ -18,6 +18,7 @@ This project provides a Python GUI built with `tkinter` that interfaces with [py
 - Enter a scaling factor for each variable so plots and saved data are scaled on the fly
 - Plot currents and speed, or save to Excel, CSV or MATLAB format
 - Dummy mode available by setting `USE_SCOPE = False`
+- Experimental button to disable the sample interval guard
 
 ## Requirements
 
@@ -56,9 +57,10 @@ Detailed documentation is available at https://x2cscope.github.io/pyx2cscope/
    - Scale (RPM/count)
    - Logging time (seconds)
    - Sample interval (ms)
-     - Each enabled variable adds roughly **3&nbsp;ms** of overhead. When
-       `ENFORCE_SAMPLE_LIMIT` is enabled in the code, the GUI prevents
-       choosing an interval shorter than `3 × number_of_selected_variables`.
+    - Each enabled variable adds roughly **3&nbsp;ms** of overhead. The GUI
+      enforces a minimum interval of `3 × number_of_selected_variables`.
+      Use the experimental button to bypass this guard and try shorter
+      sampling periods.
 3. Click **START** to capture data. Press **STOP** to end the capture early.
 4. Use the buttons to plot currents, plot speed, or save the captured data.
 
@@ -105,4 +107,8 @@ Set `USE_SCOPE = False` to run the GUI without hardware.
 
 - Fixed multi-channel capture when using newer `pyX2Cscope` releases.
 - Fixed irregular time axis in captured data.
+
+### August 2025
+
+- Added experimental button to remove the sample interval safeguard.
 
