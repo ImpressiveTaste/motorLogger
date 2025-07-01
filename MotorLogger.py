@@ -110,7 +110,13 @@ class _ScopeWrapper:
         """Configure scope channels and sampling interval."""
         if not USE_SCOPE or self._scope is None:
             return
-        self._scope.clear_scope_channels()
+        # pyX2Cscope renamed this helper in newer releases
+        if hasattr(self._scope, "clear_scope_channels"):
+            self._scope.clear_scope_channels()
+        elif hasattr(self._scope, "clear_all_scope_channel"):
+            self._scope.clear_all_scope_channel()
+        elif hasattr(self._scope, "clear_all_scope_channels"):
+            self._scope.clear_all_scope_channels()
         self._chan_map = {}
         for idx, var in enumerate(vars):
             ch = self._scope.add_scope_channel(var)
