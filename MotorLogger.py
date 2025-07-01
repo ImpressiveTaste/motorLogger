@@ -26,6 +26,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Union
+from dataclasses import dataclass, field
 
 import serial.tools.list_ports
 
@@ -67,6 +68,9 @@ VEL_MEAS_VAR = "motor.apiData.velocityMeasured"    # counts
 RUN_REQ_VAR  = "motor.apiData.runMotorRequest"
 STOP_REQ_VAR = "motor.apiData.stopMotorRequest"
 
+# Default sample interval for logging [ms]
+DEFAULT_SAMPLE_MS = 5
+
 # ─── Dummy replacements (enable by setting USE_SCOPE = False) ────────────────
 class _DummyVar:
     def __init__(self, name: str):
@@ -91,23 +95,167 @@ class _ScopeWrapper:
             self._scope.disconnect()
             self._scope = None
 
+# ─── Model ------------------------------------------------------------------
+@dataclass
+class MotorLoggerModel:
+    """Holds the application state used by the view and controller."""
+
+    elf_path: str = ""
+    com_port: str = "-"
+    speed_rpm: float = 1500.0
+    scale: float = 0.19913
+    log_time: float = 5.0
+    sample_ms: float = DEFAULT_SAMPLE_MS
+    scale_factors: Dict[str, float] = field(
+        default_factory=lambda: {k: 1.0 for k in VAR_PATHS}
+    )
+    selected_vars: List[str] = field(
+        default_factory=lambda: list(VAR_PATHS)
+    )
+    data: Dict[str, List[float]] = field(default_factory=dict)
+    connected: bool = False
+
+
+class MotorLoggerController:
+    """Business logic operating on :class:`MotorLoggerModel`."""
+
+    def __init__(self, model: MotorLoggerModel, on_done=None):
+        self.model = model
+        self._on_done = on_done
+        self.scope = _ScopeWrapper()
+        self._cap_thread: threading.Thread | None = None
+        self._stop_flag = threading.Event()
+
+    # Connection ---------------------------------------------------------
+    def connect(self) -> None:
+        port, elf = self.model.com_port, self.model.elf_path
+        if port in ("", "-") or not elf:
+            raise ValueError("Choose COM port and ELF file")
+        if not pathlib.Path(elf).is_file():
+            raise FileNotFoundError("ELF not found")
+        self.scope.connect(port, elf)
+        self.hwui = self.scope.get_variable(HWUI_VAR)
+        self.cmd_var = self.scope.get_variable(VEL_CMD_VAR)
+        self.meas_var = self.scope.get_variable(VEL_MEAS_VAR)
+        self.run_var = self.scope.get_variable(RUN_REQ_VAR)
+        self.stop_var = self.scope.get_variable(STOP_REQ_VAR)
+        self.mon_vars = {k: self.scope.get_variable(p) for k, p in VAR_PATHS.items()}
+        missing = [k for k, v in self.mon_vars.items() if v is None]
+        if missing:
+            raise RuntimeError("Symbols not in ELF:\n  • " + "\n  • ".join(missing))
+        self.hwui.set_value(0)
+        self.model.connected = True
+
+    def disconnect(self) -> None:
+        self.stop_capture()
+        self.scope.disconnect()
+        self.model.connected = False
+
+    # Capture ------------------------------------------------------------
+    def start_capture(self) -> None:
+        if self._cap_thread and self._cap_thread.is_alive():
+            return
+        self.model.data = {k: [] for k in self.model.selected_vars}
+        self.model.data["t"] = []
+        self.model.data["MotorRunning"] = []
+        self._stop_flag.clear()
+        self.ts = self.model.sample_ms / 1000.0
+        self.cmd_var.set_value(int(round(self.model.speed_rpm / self.model.scale)))
+
+        self._cap_thread = threading.Thread(target=self._worker, args=(self.model.log_time,), daemon=True)
+        self._cap_thread.start()
+
+    def stop_capture(self) -> None:
+        self._stop_flag.set()
+
+    # Worker -------------------------------------------------------------
+    def _worker(self, dur: float) -> None:
+        PRE_START = 0.5
+        POST_STOP = 1.0
+
+        try:
+            self.stop_var.set_value(0)
+
+            t0 = time.perf_counter()
+            next_t = t0
+            run_cmd_time = t0 + PRE_START
+
+            while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.model.data["t"].append(ts)
+                self.model.data["MotorRunning"].append(0)
+                for k in self.model.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.model.data[k].append(raw * self.model.scale_factors[k])
+                    except Exception:
+                        self.model.data[k].append(float("nan"))
+                next_t += self.ts
+
+            if not self._stop_flag.is_set():
+                self.run_var.set_value(1)
+
+            run_end = run_cmd_time + dur
+
+            while not self._stop_flag.is_set() and time.perf_counter() < run_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.model.data["t"].append(ts)
+                self.model.data["MotorRunning"].append(1)
+                for k in self.model.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.model.data[k].append(raw * self.model.scale_factors[k])
+                    except Exception:
+                        self.model.data[k].append(float("nan"))
+                next_t += self.ts
+
+            self.stop_var.set_value(1)
+
+            stop_end = time.perf_counter() + POST_STOP
+            while time.perf_counter() < stop_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.model.data["t"].append(ts)
+                self.model.data["MotorRunning"].append(0)
+                for k in self.model.selected_vars:
+                    var = self.mon_vars[k]
+                    try:
+                        raw = var.get_value()
+                        self.model.data[k].append(raw * self.model.scale_factors[k])
+                    except Exception:
+                        self.model.data[k].append(float("nan"))
+                next_t += self.ts
+        finally:
+            if self._on_done:
+                self._on_done()
+
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
     GUI_POLL_MS = 500        # live RPM update
-    DEFAULT_DT  = 5          # ms sample interval
+    DEFAULT_DT  = DEFAULT_SAMPLE_MS
 
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("pyX2Cscope – Motor Logger")
 
-        # State -------------------------------------------------------------
-        self.scope = _ScopeWrapper()
-        self.connected = False
-        self._cap_thread: threading.Thread | None = None
-        self._stop_flag = threading.Event()
-        self.data: Dict[str, List[float]] = {}
-        self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
-        self.selected_vars = list(VAR_PATHS)
+        # MVC components ---------------------------------------------------
+        self.model = MotorLoggerModel()
+        self.ctrl = MotorLoggerController(
+            self.model, on_done=lambda: self.root.after(0, self._worker_done)
+        )
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -210,171 +358,82 @@ class MotorLoggerGUI:
         if fn: self.elf_path.set(fn)
 
     # ── Connection handling ───────────────────────────────────────────────
-    def _toggle_conn(self): self._disconnect() if self.connected else self._connect()
+    def _toggle_conn(self):
+        self._disconnect() if self.model.connected else self._connect()
 
     def _connect(self):
-        port, elf = self.port_var.get(), self.elf_path.get()
-        if port in ("", "-") or not elf:
-            messagebox.showwarning("Missing", "Choose COM port and ELF file"); return
-        if not pathlib.Path(elf).is_file():
-            messagebox.showerror("File", "ELF not found"); return
+        self.model.com_port = self.port_var.get()
+        self.model.elf_path = self.elf_path.get()
         try:
-            self.scope.connect(port, elf)
-            # Grab variables
-            self.hwui     = self.scope.get_variable(HWUI_VAR)
-            self.cmd_var  = self.scope.get_variable(VEL_CMD_VAR)
-            self.meas_var = self.scope.get_variable(VEL_MEAS_VAR)
-            self.run_var  = self.scope.get_variable(RUN_REQ_VAR)
-            self.stop_var = self.scope.get_variable(STOP_REQ_VAR)
-            self.mon_vars = {k: self.scope.get_variable(p) for k, p in VAR_PATHS.items()}
-            missing = [k for k, v in self.mon_vars.items() if v is None]
-            if missing:
-                raise RuntimeError("Symbols not in ELF:\n  • " + "\n  • ".join(missing))
-            self.hwui.set_value(0)  # disable on-board HMI
+            self.ctrl.connect()
         except Exception as e:
-            messagebox.showerror("Connect", str(e)); self.scope.disconnect(); return
-        # UI
-        self.connected = True
-        self.conn_btn.config(text="Disconnect"); self.start_btn.config(state="normal")
-        self.status.set(f"Connected ({port})")
+            messagebox.showerror("Connect", str(e))
+            return
+        self.conn_btn.config(text="Disconnect")
+        self.start_btn.config(state="normal")
+        self.status.set(f"Connected ({self.model.com_port})")
 
     def _disconnect(self):
-        self._stop_capture()
-        self.scope.disconnect()
-        self.connected = False
+        self.ctrl.disconnect()
         for b in (self.start_btn, self.stop_btn, self.curr_btn, self.omega_btn, self.save_btn):
             b.config(state="disabled")
-        self.conn_btn.config(text="Connect"); self.status.set("Disconnected")
+        self.conn_btn.config(text="Connect")
+        self.status.set("Disconnected")
 
     # ── Capture control ───────────────────────────────────────────────────
     def _start_capture(self):
-        if self._cap_thread and self._cap_thread.is_alive(): return
+        if self.ctrl._cap_thread and self.ctrl._cap_thread.is_alive():
+            return
         try:
-            rpm  = float(self.speed_entry.get())
-            scale= float(self.scale_entry.get())
-            dur  = float(self.dur_entry.get())
-            dt_ms= float(self.sample_entry.get())
-            if rpm<0 or scale<=0 or dur<=0 or dt_ms<=0: raise ValueError
+            self.model.speed_rpm = float(self.speed_entry.get())
+            self.model.scale = float(self.scale_entry.get())
+            self.model.log_time = float(self.dur_entry.get())
+            self.model.sample_ms = float(self.sample_entry.get())
+            if (
+                self.model.speed_rpm < 0
+                or self.model.scale <= 0
+                or self.model.log_time <= 0
+                or self.model.sample_ms <= 0
+            ):
+                raise ValueError
         except ValueError:
-            messagebox.showerror("Input", "Enter valid positive numbers"); return
-        if USE_SCOPE and not self.connected:
-            messagebox.showwarning("Not connected", "Connect to a target first"); return
+            messagebox.showerror("Input", "Enter valid positive numbers")
+            return
+        if USE_SCOPE and not self.model.connected:
+            messagebox.showwarning("Not connected", "Connect to a target first")
+            return
 
-        # Update scale factors from Scaling tab
         for k in VAR_PATHS:
             try:
-                self.scale_factors[k] = float(self.scale_vars[k].get())
+                self.model.scale_factors[k] = float(self.scale_vars[k].get())
             except ValueError:
-                self.scale_factors[k] = 1.0
+                self.model.scale_factors[k] = 1.0
 
-        # Selected variables and prep
-        self.selected_vars = [k for k, v in self.var_enabled.items() if v.get()]
-        if not self.selected_vars:
+        self.model.selected_vars = [k for k, v in self.var_enabled.items() if v.get()]
+        if not self.model.selected_vars:
             messagebox.showwarning("Variables", "Select at least one variable")
             return
-        self.data = {k: [] for k in self.selected_vars}
-        self.data["t"] = []
-        self.data["MotorRunning"] = []  # 1 when spinning, 0 after stop command
-        self._stop_flag.clear(); self.ts = dt_ms / 1000.0
-        self.cmd_var.set_value(int(round(rpm/scale)))
 
-        self._cap_thread = threading.Thread(target=self._worker, args=(dur,), daemon=True)
-        self._cap_thread.start()
+        self.ctrl.start_capture()
 
-        self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
+        self.start_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
         for b in (self.curr_btn, self.omega_btn, self.save_btn):
             b.config(state="disabled")
         for w in self._lock_widgets:
             w.config(state="disabled")
 
-    def _stop_capture(self): self._stop_flag.set()
-
-    def _worker(self, dur: float):
-        """Background capture."""
-        PRE_START = 0.5      # capture before sending run command [s]
-        POST_STOP = 1.0      # capture after stop command [s]
-
-        try:
-            self.status.set("Running + logging…")
-            self.stop_var.set_value(0)
-
-            t0 = time.perf_counter()
-            next_t = t0
-            run_cmd_time = t0 + PRE_START
-
-            # ── Pre-start capture ───────────────────────────────────────
-            while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(0)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
-
-            if not self._stop_flag.is_set():
-                self.run_var.set_value(1)
-
-            run_end = run_cmd_time + dur
-
-            # ── Main capture while motor running ───────────────────────
-            while not self._stop_flag.is_set() and time.perf_counter() < run_end:
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(1)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
-
-            self.stop_var.set_value(1)
-
-            stop_end = time.perf_counter() + POST_STOP
-            # ── Capture after issuing stop command ─────────────────────
-            while time.perf_counter() < stop_end:
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(0)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
-        finally:
-            if self.root.winfo_exists():
-                self.root.after(0, self._worker_done)
+    def _stop_capture(self):
+        self.ctrl.stop_capture()
 
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
-        if self.data["t"]:
-            if any(k in self.data for k in ("idqCmd_q", "Idq_q", "Idq_d")):
+        if self.model.data.get("t"):
+            if any(k in self.model.data for k in ("idqCmd_q", "Idq_q", "Idq_d")):
                 self.curr_btn.config(state="normal")
             else:
                 self.curr_btn.config(state="disabled")
-            if any(k in self.data for k in ("OmegaElectrical", "OmegaCmd")):
+            if any(k in self.model.data for k in ("OmegaElectrical", "OmegaCmd")):
                 self.omega_btn.config(state="normal")
             else:
                 self.omega_btn.config(state="disabled")
@@ -389,11 +448,12 @@ class MotorLoggerGUI:
     def _poll_gui(self):
         if not self.root.winfo_exists():
             return
-        if self._cap_thread and self._cap_thread.is_alive():
+        if self.ctrl._cap_thread and self.ctrl._cap_thread.is_alive():
             self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui); return
-        if self.connected:
+        if self.model.connected:
             try:
-                cnt_meas = self.meas_var.get_value(); cnt_cmd = self.cmd_var.get_value()
+                cnt_meas = self.ctrl.meas_var.get_value();
+                cnt_cmd = self.ctrl.cmd_var.get_value()
                 scale = float(self.scale_entry.get())
                 self.meas_str.set(f"{cnt_meas*scale:+.0f} RPM ({cnt_meas})")
                 self.cmd_str .set(f"{cnt_cmd *scale:+.0f} RPM ({cnt_cmd})")
@@ -405,19 +465,19 @@ class MotorLoggerGUI:
 
     # ── Plot & save ──────────────────────────────────────────────────────
     def _plot_currents(self):
-        if not self.data["t"]:
+        if not self.model.data.get("t"):
             messagebox.showinfo("No data", "Nothing captured yet"); return
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
+        t = self.model.data["t"]
         for k, lbl in (
             ("idqCmd_q", "idqCmd.q [A]"),
             ("Idq_q",    "idq.q [A]"),
             ("Idq_d",    "idq.d [A]"),
         ):
-            if k in self.data:
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.model.data:
+                ax.plot(t, self.model.data[k], label=lbl, linewidth=0.9)
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Current [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
@@ -427,18 +487,18 @@ class MotorLoggerGUI:
         fig.tight_layout()
 
     def _plot_omega(self):
-        if not self.data["t"]:
+        if not self.model.data.get("t"):
             messagebox.showinfo("No data", "Nothing captured yet"); return
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
+        t = self.model.data["t"]
         for k, lbl in (
             ("OmegaElectrical", "omegaElectrical [RPM]"),
             ("OmegaCmd",        "omegaCmd [RPM]"),
         ):
-            if k in self.data:
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.model.data:
+                ax.plot(t, self.model.data[k], label=lbl, linewidth=0.9)
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Omega [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
@@ -448,7 +508,7 @@ class MotorLoggerGUI:
         fig.tight_layout()
 
     def _save(self):
-        if not self.data["t"]:
+        if not self.model.data.get("t"):
             messagebox.showinfo("No data", "Nothing to save"); return
         fn = filedialog.asksaveasfilename(defaultextension=".xlsx",
                                           filetypes=[("Excel","*.xlsx"),("MATLAB","*.mat"),("CSV","*.csv"),("All","*.*")])
@@ -457,13 +517,13 @@ class MotorLoggerGUI:
         try:
             if ext == ".mat":
                 if sio is None: raise RuntimeError("scipy not installed")
-                sio.savemat(fn, self.data)
+                sio.savemat(fn, self.model.data)
             elif ext == ".csv":
                 if pd is None: raise RuntimeError("pandas not installed")
-                pd.DataFrame(self.data).to_csv(fn, index=False)
+                pd.DataFrame(self.model.data).to_csv(fn, index=False)
             else:  # Excel
                 if pd is None: raise RuntimeError("pandas not installed")
-                pd.DataFrame(self.data).to_excel(fn, index=False)
+                pd.DataFrame(self.model.data).to_excel(fn, index=False)
         except Exception as e:
             messagebox.showerror("Save", str(e)); return
         messagebox.showinfo("Saved", fn)
@@ -471,15 +531,15 @@ class MotorLoggerGUI:
     # ── Cleanup ──────────────────────────────────────────────────────────
     def _on_close(self):
         try:
-            self._stop_flag.set()
+            self.ctrl.stop_capture()
             if self._poll_job is not None:
                 try:
                     self.root.after_cancel(self._poll_job)
                 except Exception:
                     pass
-            if self._cap_thread and self._cap_thread.is_alive():
-                self._cap_thread.join(timeout=2)
-            self.scope.disconnect()
+            if self.ctrl._cap_thread and self.ctrl._cap_thread.is_alive():
+                self.ctrl._cap_thread.join(timeout=2)
+            self.ctrl.disconnect()
         finally:
             if self.root.winfo_exists():
                 try:
