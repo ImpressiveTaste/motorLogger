@@ -273,17 +273,48 @@ class MotorLoggerGUI:
 
     def _worker(self, dur: float):
         """Background capture."""
+        PRE_START = 0.5      # capture before sending run command [s]
+        POST_STOP = 1.0      # capture after stop command [s]
+
         try:
             self.status.set("Running + logging…")
-            self.stop_var.set_value(0); self.run_var.set_value(1)
+            self.stop_var.set_value(0)
 
-            t0 = time.perf_counter(); next_t = t0
-            while not self._stop_flag.is_set() and (time.perf_counter() - t0) < dur:
+            t0 = time.perf_counter()
+            next_t = t0
+            run_cmd_time = t0 + PRE_START
+
+            # ── Pre-start capture ───────────────────────────────────────
+            while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
                 now = time.perf_counter()
                 if now < next_t:
-                    time.sleep(max(next_t - now, 0)); continue
-                ts = now - t0; self.data["t"].append(ts); self.data["MotorRunning"].append(1)
-                # Fetch vars
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
+                for k, var in self.mon_vars.items():
+                    try:
+                        raw = var.get_value()
+                        self.data[k].append(raw * self.scale_factors[k])
+                    except Exception:
+                        self.data[k].append(float("nan"))
+                next_t += self.ts
+
+            if not self._stop_flag.is_set():
+                self.run_var.set_value(1)
+
+            run_end = run_cmd_time + dur
+
+            # ── Main capture while motor running ───────────────────────
+            while not self._stop_flag.is_set() and time.perf_counter() < run_end:
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(1)
                 for k, var in self.mon_vars.items():
                     try:
                         raw = var.get_value()
@@ -294,12 +325,16 @@ class MotorLoggerGUI:
 
             self.stop_var.set_value(1)
 
-            stop_end = time.perf_counter() + 2.0
+            stop_end = time.perf_counter() + POST_STOP
+            # ── Capture after issuing stop command ─────────────────────
             while time.perf_counter() < stop_end:
                 now = time.perf_counter()
                 if now < next_t:
-                    time.sleep(max(next_t - now, 0)); continue
-                ts = now - t0; self.data["t"].append(ts); self.data["MotorRunning"].append(0)
+                    time.sleep(max(next_t - now, 0))
+                    continue
+                ts = now - t0
+                self.data["t"].append(ts)
+                self.data["MotorRunning"].append(0)
                 for k, var in self.mon_vars.items():
                     try:
                         raw = var.get_value()
