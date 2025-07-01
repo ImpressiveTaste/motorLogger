@@ -55,7 +55,11 @@ Detailed documentation is available at https://x2cscope.github.io/pyx2cscope/
    - Target speed (RPM)
    - Scale (RPM/count)
    - Logging time (seconds)
-   - Sample interval (ms)
+    - Sample interval (ms)
+      - Each enabled variable adds roughly **3&nbsp;ms** of overhead. When
+        `ENFORCE_SAMPLE_LIMIT` is enabled (see :func:`min_allowed_interval` in
+        the code), the GUI prevents choosing an interval shorter than
+        `3 × number_of_selected_variables`.
 3. Click **START** to capture data. Press **STOP** to end the capture early.
 4. Use the buttons to plot currents, plot speed, or save the captured data.
 

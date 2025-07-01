@@ -51,6 +51,23 @@ USE_SCOPE = True
 if USE_SCOPE:
     from pyx2cscope.x2cscope import X2CScope
 
+# ─── Sample interval limitations ----------------------------------------------
+# Each monitored variable introduces roughly 3 ms of communication overhead.
+# When ``ENFORCE_SAMPLE_LIMIT`` is ``True``, the GUI blocks sample intervals
+# shorter than ``MIN_DELAY_PER_VAR_MS * number_of_selected_vars``.
+ENFORCE_SAMPLE_LIMIT = True
+MIN_DELAY_PER_VAR_MS = 3  # ms added per variable during capture
+
+
+def min_allowed_interval(var_count: int) -> float:
+    """Return the minimum interval allowed for ``var_count`` variables.
+
+    If :data:`ENFORCE_SAMPLE_LIMIT` is ``False`` the return value is ``0.0``.
+    """
+    if not ENFORCE_SAMPLE_LIMIT:
+        return 0.0
+    return max(var_count, 1) * float(MIN_DELAY_PER_VAR_MS)
+
 # ─── Variable paths we want to log ───────────────────────────────────────────
 VAR_PATHS = {
     "idqCmd_q":        "motor.idqCmd.q",
@@ -157,6 +174,7 @@ class MotorLoggerGUI:
         self.scale_entry  = _row("Scale (RPM/cnt):",  "0.19913", 1)
         self.dur_entry    = _row("Log time (s):",     "5",    2)
         self.sample_entry = _row("Sample every (ms):", str(self.DEFAULT_DT), 3)
+        ttk.Label(parms, text="≈3 ms per enabled variable").grid(row=3, column=2, sticky="w")
 
         # Buttons
         btn = ttk.Frame(main); btn.pack(pady=(6, 2))
@@ -271,6 +289,13 @@ class MotorLoggerGUI:
         self.selected_vars = [k for k, v in self.var_enabled.items() if v.get()]
         if not self.selected_vars:
             messagebox.showwarning("Variables", "Select at least one variable")
+            return
+        min_dt = min_allowed_interval(len(self.selected_vars))
+        if dt_ms < min_dt:
+            messagebox.showwarning(
+                "Sample interval",
+                f"Minimum allowed interval is {min_dt:.0f} ms for {len(self.selected_vars)} vars",
+            )
             return
         self.data = {k: [] for k in self.selected_vars}
         self.data["t"] = []
