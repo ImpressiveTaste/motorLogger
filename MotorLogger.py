@@ -172,6 +172,7 @@ class MotorLoggerGUI:
         self.connected = False
         self._cap_thread: threading.Thread | None = None
         self._stop_flag = threading.Event()
+        self._start_time = 0.0
         self.data: Dict[str, List[float]] = {}
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
         self.selected_vars = list(VAR_PATHS)
@@ -383,8 +384,10 @@ class MotorLoggerGUI:
                 n = len(first)
             except Exception:
                 return False
+            now = time.perf_counter() - self._start_time
+            base = now - (n - 1) * self.ts
             for i in range(n):
-                self.data["t"].append(self._sample_idx * self.ts)
+                self.data["t"].append(base + i * self.ts)
                 self.data["MotorRunning"].append(running)
                 for ch, k in enumerate(self.selected_vars):
                     try:
@@ -420,9 +423,8 @@ class MotorLoggerGUI:
             self.scope.request_scope_data()
 
             self._sample_idx = 0
-
-            start = time.perf_counter()
-            run_cmd_time = start + PRE_START
+            self._start_time = time.perf_counter()
+            run_cmd_time = self._start_time + PRE_START
 
             # ── Capture before starting motor ──────────────────────────
             while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
