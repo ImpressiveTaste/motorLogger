@@ -104,5 +104,5 @@ Set `USE_SCOPE = False` to run the GUI without hardware.
 ### July 2025
 
 - Fixed multi-channel capture when using newer `pyX2Cscope` releases.
-- Corrected time axis when plotting captured data.
+- Fixed irregular time axis in captured data.
 

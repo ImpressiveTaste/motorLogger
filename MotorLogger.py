@@ -384,10 +384,8 @@ class MotorLoggerGUI:
                 n = len(first)
             except Exception:
                 return False
-            now = time.perf_counter() - self._start_time
-            base = now - (n - 1) * self.ts
             for i in range(n):
-                self.data["t"].append(base + i * self.ts)
+                self.data["t"].append(self._sample_idx * self.ts)
                 self.data["MotorRunning"].append(running)
                 for ch, k in enumerate(self.selected_vars):
                     try:
