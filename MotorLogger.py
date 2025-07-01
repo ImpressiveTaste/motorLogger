@@ -107,6 +107,7 @@ class MotorLoggerGUI:
         self._stop_flag = threading.Event()
         self.data: Dict[str, List[float]] = {}
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
+        self.selected_vars = list(VAR_PATHS)
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -144,10 +145,14 @@ class MotorLoggerGUI:
         parms = ttk.LabelFrame(main, text="Parameters", padding=10)
         parms.pack(fill="x", padx=10, pady=4)
 
+        self._lock_widgets: List[tk.Widget] = []  # disabled during capture
+
         def _row(lbl, default, r):
             ttk.Label(parms, text=lbl).grid(row=r, column=0, sticky="e")
             e = ttk.Entry(parms, width=12); e.insert(0, default)
-            e.grid(row=r, column=1, padx=6, pady=2); return e
+            e.grid(row=r, column=1, padx=6, pady=2)
+            self._lock_widgets.append(e)
+            return e
         self.speed_entry  = _row("Speed (RPM):",      "1500", 0)
         self.scale_entry  = _row("Scale (RPM/cnt):",  "0.19913", 1)
         self.dur_entry    = _row("Log time (s):",     "5",    2)
@@ -177,10 +182,17 @@ class MotorLoggerGUI:
         tbl.grid(row=5, column=0, columnspan=2, sticky="w")
 
         self.scale_vars: Dict[str, tk.StringVar] = {}
+        self.var_enabled: Dict[str, tk.BooleanVar] = {}
         for r, (name, _) in enumerate(VAR_PATHS.items()):
-            ttk.Label(tbl, text=name, width=15).grid(row=r, column=0, sticky="e", pady=2)
+            en = tk.BooleanVar(value=True); self.var_enabled[name] = en
+            chk = ttk.Checkbutton(tbl, variable=en)
+            chk.grid(row=r, column=0, padx=(0,4))
+            self._lock_widgets.append(chk)
+            ttk.Label(tbl, text=name, width=15).grid(row=r, column=1, sticky="e", pady=2)
             sv = tk.StringVar(value="1.0"); self.scale_vars[name] = sv
-            ttk.Entry(tbl, textvariable=sv, width=10).grid(row=r, column=1, sticky="w", padx=6)
+            ent = ttk.Entry(tbl, textvariable=sv, width=10)
+            ent.grid(row=r, column=2, sticky="w", padx=6)
+            self._lock_widgets.append(ent)
 
     # ── Helper utilities ───────────────────────────────────────────────────
     @staticmethod
@@ -255,8 +267,12 @@ class MotorLoggerGUI:
             except ValueError:
                 self.scale_factors[k] = 1.0
 
-        # Prep
-        self.data = {k: [] for k in VAR_PATHS}
+        # Selected variables and prep
+        self.selected_vars = [k for k, v in self.var_enabled.items() if v.get()]
+        if not self.selected_vars:
+            messagebox.showwarning("Variables", "Select at least one variable")
+            return
+        self.data = {k: [] for k in self.selected_vars}
         self.data["t"] = []
         self.data["MotorRunning"] = []  # 1 when spinning, 0 after stop command
         self._stop_flag.clear(); self.ts = dt_ms / 1000.0
@@ -268,6 +284,8 @@ class MotorLoggerGUI:
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
         for b in (self.curr_btn, self.omega_btn, self.save_btn):
             b.config(state="disabled")
+        for w in self._lock_widgets:
+            w.config(state="disabled")
 
     def _stop_capture(self): self._stop_flag.set()
 
@@ -293,7 +311,8 @@ class MotorLoggerGUI:
                 ts = now - t0
                 self.data["t"].append(ts)
                 self.data["MotorRunning"].append(0)
-                for k, var in self.mon_vars.items():
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
                     try:
                         raw = var.get_value()
                         self.data[k].append(raw * self.scale_factors[k])
@@ -315,7 +334,8 @@ class MotorLoggerGUI:
                 ts = now - t0
                 self.data["t"].append(ts)
                 self.data["MotorRunning"].append(1)
-                for k, var in self.mon_vars.items():
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
                     try:
                         raw = var.get_value()
                         self.data[k].append(raw * self.scale_factors[k])
@@ -335,7 +355,8 @@ class MotorLoggerGUI:
                 ts = now - t0
                 self.data["t"].append(ts)
                 self.data["MotorRunning"].append(0)
-                for k, var in self.mon_vars.items():
+                for k in self.selected_vars:
+                    var = self.mon_vars[k]
                     try:
                         raw = var.get_value()
                         self.data[k].append(raw * self.scale_factors[k])
@@ -349,11 +370,20 @@ class MotorLoggerGUI:
     def _worker_done(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
         if self.data["t"]:
-            for b in (self.curr_btn, self.omega_btn, self.save_btn):
-                b.config(state="normal")
+            if any(k in self.data for k in ("idqCmd_q", "Idq_q", "Idq_d")):
+                self.curr_btn.config(state="normal")
+            else:
+                self.curr_btn.config(state="disabled")
+            if any(k in self.data for k in ("OmegaElectrical", "OmegaCmd")):
+                self.omega_btn.config(state="normal")
+            else:
+                self.omega_btn.config(state="disabled")
+            self.save_btn.config(state="normal")
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
+        for w in self._lock_widgets:
+            w.config(state="normal")
 
     # ── Live RPM polling ─────────────────────────────────────────────────
     def _poll_gui(self):
@@ -386,7 +416,8 @@ class MotorLoggerGUI:
             ("Idq_q",    "idq.q [A]"),
             ("Idq_d",    "idq.d [A]"),
         ):
-            ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data:
+                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Current [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
@@ -406,7 +437,8 @@ class MotorLoggerGUI:
             ("OmegaElectrical", "omegaElectrical [RPM]"),
             ("OmegaCmd",        "omegaCmd [RPM]"),
         ):
-            ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data:
+                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Omega [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
