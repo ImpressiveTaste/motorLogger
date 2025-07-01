@@ -84,19 +84,53 @@ class _DummyVar:
 
 class _ScopeWrapper:
     """Hides real / dummy selection."""
-    def __init__(self): self._scope: Union[X2CScope, None] = None
+    def __init__(self):
+        self._scope: Union[X2CScope, None] = None
+        self._chan_map: Dict[int, int] = {}
+
     def connect(self, port: str, elf: str):
         if USE_SCOPE:
             self._scope = X2CScope(port=port)
             self._scope.import_variables(elf)
+
     def get_variable(self, path: str):
-        if not USE_SCOPE: return _DummyVar(path)
-        if self._scope is None: raise RuntimeError("Scope not connected")
+        if not USE_SCOPE:
+            return _DummyVar(path)
+        if self._scope is None:
+            raise RuntimeError("Scope not connected")
         return self._scope.get_variable(path)
+
     def disconnect(self):
         if USE_SCOPE and self._scope:
             self._scope.disconnect()
             self._scope = None
+
+    # Scope channel helpers -------------------------------------------------
+    def prepare_scope(self, vars: List[object], sample_ms: int):
+        """Configure scope channels and sampling interval."""
+        if not USE_SCOPE or self._scope is None:
+            return
+        self._scope.clear_scope_channels()
+        self._chan_map = {}
+        for idx, var in enumerate(vars):
+            ch = self._scope.add_scope_channel(var)
+            self._chan_map[ch] = idx
+        self._scope.set_sample_time(sample_ms)
+        self._scope.request_scope_data()
+
+    def scope_ready(self) -> bool:
+        if not USE_SCOPE or self._scope is None:
+            return False
+        return bool(self._scope.is_scope_data_ready())
+
+    def get_scope_data(self):
+        if not USE_SCOPE or self._scope is None:
+            return {}
+        return self._scope.get_scope_channel_data(valid_data=False)
+
+    def request_scope_data(self):
+        if USE_SCOPE and self._scope:
+            self._scope.request_scope_data()
 
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
@@ -337,78 +371,54 @@ class MotorLoggerGUI:
 
     def _worker(self, dur: float):
         """Background capture."""
-        PRE_START = 0.5      # capture before sending run command [s]
-        POST_STOP = 1.0      # capture after stop command [s]
+        PRE_START = 0.5  # capture before sending run command [s]
+        POST_STOP = 1.0  # capture after stop command [s]
 
         try:
             self.status.set("Running + logging…")
             self.stop_var.set_value(0)
 
             t0 = time.perf_counter()
-            next_t = t0
             run_cmd_time = t0 + PRE_START
+            stop_cmd_time = run_cmd_time + dur
+            end_time = stop_cmd_time + POST_STOP
 
-            # ── Pre-start capture ───────────────────────────────────────
-            while not self._stop_flag.is_set() and time.perf_counter() < run_cmd_time:
+            # Configure scope for fast multi-channel capture
+            vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
+            self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+
+            sample_idx = 0
+            run_sent = False
+            stop_sent = False
+
+            while not self._stop_flag.is_set() and time.perf_counter() < end_time:
                 now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(0)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
 
-            if not self._stop_flag.is_set():
-                self.run_var.set_value(1)
+                if not run_sent and now >= run_cmd_time:
+                    self.run_var.set_value(1)
+                    run_sent = True
+                if not stop_sent and now >= stop_cmd_time:
+                    self.stop_var.set_value(1)
+                    stop_sent = True
 
-            run_end = run_cmd_time + dur
+                running = run_cmd_time <= now < stop_cmd_time
 
-            # ── Main capture while motor running ───────────────────────
-            while not self._stop_flag.is_set() and time.perf_counter() < run_end:
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(1)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
+                if self.scope.scope_ready():
+                    chans = self.scope.get_scope_data()
+                    self.scope.request_scope_data()
+                    if chans:
+                        n = len(next(iter(chans.values())))
+                        for _ in range(n):
+                            self.data["t"].append(sample_idx * self.ts)
+                            self.data["MotorRunning"].append(1 if running else 0)
+                            sample_idx += 1
+                        for ch, vals in chans.items():
+                            idx = self.scope._chan_map.get(ch, 0)
+                            name = self.selected_vars[idx]
+                            scale = self.scale_factors[name]
+                            self.data[name].extend([v * scale for v in vals])
 
-            self.stop_var.set_value(1)
-
-            stop_end = time.perf_counter() + POST_STOP
-            # ── Capture after issuing stop command ─────────────────────
-            while time.perf_counter() < stop_end:
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(next_t - now, 0))
-                    continue
-                ts = now - t0
-                self.data["t"].append(ts)
-                self.data["MotorRunning"].append(0)
-                for k in self.selected_vars:
-                    var = self.mon_vars[k]
-                    try:
-                        raw = var.get_value()
-                        self.data[k].append(raw * self.scale_factors[k])
-                    except Exception:
-                        self.data[k].append(float("nan"))
-                next_t += self.ts
+                time.sleep(self.ts / 10)
         finally:
             try:
                 if self.root.winfo_exists():
