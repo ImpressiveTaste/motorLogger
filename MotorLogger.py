@@ -388,7 +388,18 @@ class MotorLoggerGUI:
                 self.data["MotorRunning"].append(running)
                 for ch, k in enumerate(self.selected_vars):
                     try:
-                        val = block.get(ch, first)[i]
+                        # Channel keys vary across pyX2Cscope versions.
+                        # Look up by multiple possibilities to avoid
+                        # falling back to the first channel for every entry.
+                        var = self.mon_vars.get(k)
+                        val_block = (
+                            block.get(ch)
+                            or block.get(ch + 1)
+                            or (block.get(var) if var is not None else None)
+                            or block.get(VAR_PATHS.get(k, ""))
+                            or first
+                        )
+                        val = val_block[i]
                         self.data[k].append(val * self.scale_factors[k])
                     except Exception:
                         self.data[k].append(float("nan"))
