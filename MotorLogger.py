@@ -166,6 +166,7 @@ class MotorLoggerGUI:
         self.dur_entry    = _row("Log time (s):",     "5",    2)
         self.sample_entry = _row("Sample every (ms):", str(self.DEFAULT_DT), 3)
         ttk.Label(parms, text="≈3 ms per enabled variable").grid(row=3, column=2, sticky="w")
+        ttk.Button(parms, text="?", width=2, command=self._show_sample_info).grid(row=3, column=3, padx=(2,0))
 
         # Buttons
         btn = ttk.Frame(main); btn.pack(pady=(6, 2))
@@ -234,6 +235,17 @@ class MotorLoggerGUI:
         else:
             txt = "Re-enable mS guard"
         self.guard_btn.config(text=txt)
+
+    def _show_sample_info(self):
+        """Explain sample interval limitations."""
+        messagebox.showinfo(
+            "Sample rate limits",
+            "Each enabled variable requires roughly 2.5 ms when using the\n"
+            "current polling implementation. The logger enforces about 3 ms\n"
+            "per variable to provide some margin. You can achieve faster\n"
+            "rates by optimizing the code, using lower level access calls,\n"
+            "or increasing the UART baud rate.",
+        )
 
     # ── Connection handling ───────────────────────────────────────────────
     def _toggle_conn(self): self._disconnect() if self.connected else self._connect()
