@@ -290,7 +290,10 @@ class MotorLoggerGUI:
         self._stop_flag.clear(); self.ts = dt_ms / 1000.0
         self.cmd_var.set_value(int(round(rpm/scale)))
         if USE_SCOPE:
-            self.scope._scope.set_sample_time(dt_ms)
+            # Older versions of pyX2Cscope expect an integer sample time.
+            # Ensure we pass an int to avoid a bitwise operation error in
+            # the library when a float is used.
+            self.scope._scope.set_sample_time(int(dt_ms))
         max_samples = int(dur * 1000 / dt_ms)
 
         self._cap_thread = threading.Thread(target=self._worker, args=(max_samples, self.ts), daemon=True)
