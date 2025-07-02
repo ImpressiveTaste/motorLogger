@@ -1,6 +1,6 @@
 # pyX2Cscope Motor Logger GUI
 
-**Last updated:** September 1, 2025
+**Last updated:** January 15, 2026
 
 This project provides a Python GUI built with `tkinter` that interfaces with [pyX2Cscope](https://github.com/X2Cscope/pyx2cscope). It can connect to a Microchip MCAF target, start or stop the motor and log multiple variables with optional per‑channel scaling.
 
@@ -57,11 +57,10 @@ Detailed documentation is available at https://x2cscope.github.io/pyx2cscope/
    - Scale (RPM/count)
    - Logging time (seconds)
    - Sample interval (ms)
-    - Previous versions used polling which limited each variable to about
-      **2.5&nbsp;ms**. The logger now configures X2Cscope scope channels so up to
-      six variables can be captured at **1 ms** intervals. The GUI still enforces
-      a conservative minimum delay of `3 × number_of_selected_variables`, but you
-      can disable this using the experimental button to reach faster rates.
+    - Logging now uses X2Cscope scope channels. All selected variables can be
+      sampled at **1 ms** intervals. The GUI enforces a 1 ms minimum by default,
+      but you can disable this using the experimental button to try faster
+      rates.
 3. Click **START** to capture data. Press **STOP** to end the capture early.
 4. Use the buttons to plot currents, plot speed, or save the captured data.
 
@@ -117,4 +116,8 @@ Set `USE_SCOPE = False` to run the GUI without hardware.
 
 - Scope capture now uses X2Cscope channels allowing 1 ms sampling for up to six
   variables.
+
+### January 2026
+
+- Sample guard updated: minimum sample interval is 1 ms for all variables.
 
