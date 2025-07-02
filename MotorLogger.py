@@ -67,6 +67,9 @@ VAR_PATHS = {
     "OmegaCmd":        "motor.omegaCmd",
 }
 
+# Reverse lookup: "motor.idqCmd.q" -> "idqCmd_q"
+PATH_TO_KEY = {v: k for k, v in VAR_PATHS.items()}
+
 # Control & read-back paths
 HWUI_VAR     = "app.hardwareUiEnabled"
 VEL_CMD_VAR  = "motor.apiData.velocityReference"   # counts
@@ -86,7 +89,6 @@ class _ScopeWrapper:
     """Hides real / dummy selection."""
     def __init__(self):
         self._scope: Union[X2CScope, None] = None
-        self._chan_map: Dict[int, int] = {}
 
     def connect(self, port: str, elf: str):
         if USE_SCOPE:
@@ -117,10 +119,8 @@ class _ScopeWrapper:
             self._scope.clear_all_scope_channel()
         elif hasattr(self._scope, "clear_all_scope_channels"):
             self._scope.clear_all_scope_channels()
-        self._chan_map = {}
         for idx, var in enumerate(vars):
             ch = self._scope.add_scope_channel(var)
-            self._chan_map[ch] = idx
         self._scope.set_sample_time(sample_ms)
         self._scope.request_scope_data()
 
@@ -411,18 +411,29 @@ class MotorLoggerGUI:
 
                 if self.scope.scope_ready():
                     chans = self.scope.get_scope_data()
-                    self.scope.request_scope_data()
+                    self.scope.request_scope_data()          # <- leave here
+
                     if chans:
-                        n = len(next(iter(chans.values())))
-                        for _ in range(n):
-                            self.data["t"].append(sample_idx * self.ts)
-                            self.data["MotorRunning"].append(1 if running else 0)
-                            sample_idx += 1
+                        n = len(next(iter(chans.values())))  # all lists are equal
+
+                        # time vector -------------------------------------
+                        self.data["t"].extend(
+                            [(sample_idx + i) * self.ts for i in range(n)]
+                        )
+                        self.data["MotorRunning"].extend(
+                            [1 if running else 0] * n
+                        )
+                        sample_idx += n
+
                         for ch, vals in chans.items():
-                            idx = self.scope._chan_map.get(ch, 0)
-                            name = self.selected_vars[idx]
-                            scale = self.scale_factors[name]
-                            self.data[name].extend([v * scale for v in vals])
+                            if not vals:
+                                continue
+                            key = PATH_TO_KEY.get(ch)      # ch is the full path string
+                            if key is None:                # a channel we don’t care about
+                                continue
+                            scale = self.scale_factors[key]
+                            self.data[key].extend(v * scale for v in vals)
+
 
                 time.sleep(self.ts / 10)
         finally:
@@ -433,20 +444,32 @@ class MotorLoggerGUI:
                 pass
 
     def _worker_done(self):
-        self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
-        if self.data["t"]:
+        self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+
+        if self.data.get("t"):
+            t_len = len(self.data["t"])
+            for k in list(self.data.keys()):
+                if k == "t":
+                    continue
+                if isinstance(self.data[k], list) and len(self.data[k]) != t_len:
+                    self.data[k] = self.data[k][:t_len]
+
             if any(k in self.data for k in ("idqCmd_q", "Idq_q", "Idq_d")):
                 self.curr_btn.config(state="normal")
             else:
                 self.curr_btn.config(state="disabled")
+
             if any(k in self.data for k in ("OmegaElectrical", "OmegaCmd")):
                 self.omega_btn.config(state="normal")
             else:
                 self.omega_btn.config(state="disabled")
+
             self.save_btn.config(state="normal")
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
+
         for w in self._lock_widgets:
             w.config(state="normal")
 
@@ -479,13 +502,22 @@ class MotorLoggerGUI:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
         t = self.data["t"]
+        plotted = False
         for k, lbl in (
             ("idqCmd_q", "idqCmd.q [A]"),
             ("Idq_q",    "idq.q [A]"),
             ("Idq_d",    "idq.d [A]"),
         ):
-            if k in self.data:
+            if (
+                k in self.data
+                and self.data[k]            # not empty
+                and len(self.data[k]) == len(t)
+            ):
                 ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+                plotted = True
+
+        if not plotted:
+            messagebox.showinfo("Plot", "No valid current data to plot."); return
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Current [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
@@ -501,12 +533,21 @@ class MotorLoggerGUI:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
         t = self.data["t"]
+        plotted = False
         for k, lbl in (
             ("OmegaElectrical", "omegaElectrical [RPM]"),
             ("OmegaCmd",        "omegaCmd [RPM]"),
         ):
-            if k in self.data:
+            if (
+                k in self.data
+                and self.data[k]            # not empty
+                and len(self.data[k]) == len(t)
+            ):
                 ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+                plotted = True
+
+        if not plotted:
+            messagebox.showinfo("Plot", "No valid omega data to plot."); return
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Omega [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
