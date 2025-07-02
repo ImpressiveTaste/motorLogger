@@ -52,11 +52,11 @@ if USE_SCOPE:
     from pyx2cscope.x2cscope import X2CScope
 
 # ─── Sample interval limitations ----------------------------------------------
-# Each monitored variable introduces roughly 3 ms of communication overhead.
+# Scope channel logging supports capturing all enabled variables at 1 ms.
 # When the sample guard is enabled, the GUI blocks intervals shorter than
-# ``MIN_DELAY_PER_VAR_MS * number_of_selected_vars``.
+# ``MIN_DELAY_MS``.
 DEFAULT_ENFORCE_SAMPLE_LIMIT = True
-MIN_DELAY_PER_VAR_MS = 3  # ms added per variable during capture
+MIN_DELAY_MS = 1  # minimum sample interval in ms
 
 # ─── Variable paths we want to log ───────────────────────────────────────────
 VAR_PATHS = {
@@ -205,7 +205,7 @@ class MotorLoggerGUI:
         self.scale_entry  = _row("Scale (RPM/cnt):",  "0.19913", 1)
         self.dur_entry    = _row("Log time (s):",     "5",    2)
         self.sample_entry = _row("Sample every (ms):", str(self.DEFAULT_DT), 3)
-        ttk.Label(parms, text="≈3 ms per enabled variable").grid(row=3, column=2, sticky="w")
+        ttk.Label(parms, text="≥1 ms total").grid(row=3, column=2, sticky="w")
         ttk.Button(parms, text="?", width=2, command=self._show_sample_info).grid(row=3, column=3, padx=(2,0))
 
         # Buttons
@@ -280,11 +280,9 @@ class MotorLoggerGUI:
         """Explain sample interval limitations."""
         messagebox.showinfo(
             "Sample rate limits",
-            "Each enabled variable requires roughly 2.5 ms when using the\n"
-            "current polling implementation. The logger enforces about 3 ms\n"
-            "per variable to provide some margin. You can achieve faster\n"
-            "rates by optimizing the code, using lower level access calls,\n"
-            "or increasing the UART baud rate.",
+            "Scope channels allow logging all selected variables at 1 ms.\n"
+            "The GUI enforces a 1 ms minimum interval by default.\n"
+            "Use the experimental button if you want to try faster rates.",
         )
 
     # ── Connection handling ───────────────────────────────────────────────
@@ -351,11 +349,10 @@ class MotorLoggerGUI:
             messagebox.showwarning("Variables", "Select at least one variable")
             return
         if self.enforce_limit:
-            min_dt = MIN_DELAY_PER_VAR_MS * len(self.selected_vars)
-            if dt_ms < min_dt:
+            if dt_ms < MIN_DELAY_MS:
                 messagebox.showwarning(
                     "Sample interval",
-                    f"Minimum allowed interval is {min_dt:.0f} ms for {len(self.selected_vars)} vars",
+                    f"Minimum allowed interval is {MIN_DELAY_MS:.0f} ms",
                 )
                 return
         self.data = {k: [] for k in self.selected_vars}
