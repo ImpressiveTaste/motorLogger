@@ -4,6 +4,8 @@
 
 This project provides a Python GUI built with `tkinter` that interfaces with [pyX2Cscope](https://github.com/X2Cscope/pyx2cscope). It can connect to a Microchip MCAF target, start or stop the motor and log multiple variables with optional per‑channel scaling.
 
+![alt text](https://github.com/ImpressiveTaste/motorLogger/blob/main/UPDATEDGUI.png)
+
 ## Features
 
 - Connects to MCAF-compatible targets using a selected COM port and ELF file
