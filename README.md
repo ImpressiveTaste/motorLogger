@@ -103,21 +103,12 @@ The logger uses the following scope variables:
 
 Set `USE_SCOPE = False` to run the GUI without hardware.
 
-### July 2025
+### UPDATES
 
 - Fixed multi-channel capture when using newer `pyX2Cscope` releases.
 - Fixed irregular time axis in captured data.
-
-### August 2025
-
 - Added experimental button to remove the sample interval safeguard.
-
-### September 2025
-
 - Scope capture now uses X2Cscope channels allowing 1 ms sampling for up to six
   variables.
-
-### January 2026
-
 - Sample guard updated: minimum sample interval is 1 ms for all variables.
 
