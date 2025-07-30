@@ -33,6 +33,14 @@ VAR_PATHS = {
 }
 PATH_TO_KEY = {v: k for k, v in VAR_PATHS.items()}
 
+# Variables that hold calibration results on the MCU.  These are typically
+# defined as globals in ``main.c`` and can be read back over X2Cscope.
+# Adjust the mapping here if your firmware uses different symbols.
+CAL_VARS = {
+    "offset": "resolver.offset",
+    "status": "resolver.status",
+}
+
 # Control paths (example names)
 RUN_REQ_VAR = "resolver.run"
 CAL_REQ_VAR = "resolver.calibrate"
@@ -154,6 +162,14 @@ class ResolverEncoderGUI:
         self.stop_btn.pack(side="left", padx=2)
         self.cal_btn = ttk.Button(btn, text="Calibrate", width=10, command=self._calibrate, state="disabled")
         self.cal_btn.pack(side="left", padx=2)
+        self.show_cal_btn = ttk.Button(
+            btn,
+            text="View Cal Values",
+            width=14,
+            command=self._show_calibration,
+            state="disabled",
+        )
+        self.show_cal_btn.pack(side="left", padx=2)
         self.save_btn = ttk.Button(btn, text="Save…", width=8, command=self._save, state="disabled")
         self.save_btn.pack(side="left", padx=2)
 
@@ -215,6 +231,7 @@ class ResolverEncoderGUI:
         self.conn_btn.config(text="Disconnect")
         self.start_btn.config(state="normal")
         self.cal_btn.config(state="normal")
+        self.show_cal_btn.config(state="normal")
         self.status.set(f"Connected ({port})")
 
     def _disconnect(self):
@@ -225,6 +242,7 @@ class ResolverEncoderGUI:
         self.stop_btn.config(state="disabled")
         self.save_btn.config(state="disabled")
         self.cal_btn.config(state="disabled")
+        self.show_cal_btn.config(state="disabled")
         self.conn_btn.config(text="Connect")
         self.status.set("Disconnected")
 
@@ -273,6 +291,25 @@ class ResolverEncoderGUI:
             self.cal_var.set_value(1)
         except Exception:
             pass
+
+    def _show_calibration(self):
+        """Display the current calibration values from the target."""
+        if not self.connected:
+            messagebox.showinfo("Not connected", "Connect to a target first")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Calibration values")
+        row = 0
+        for name, path in CAL_VARS.items():
+            ttk.Label(win, text=f"{name}:").grid(row=row, column=0, sticky="e", padx=4, pady=2)
+            try:
+                var = self.scope.get_variable(path)
+                val = var.get_value() if var else "—"
+            except Exception:
+                val = "—"
+            ttk.Label(win, text=str(val)).grid(row=row, column=1, sticky="w", padx=4, pady=2)
+            row += 1
+        ttk.Button(win, text="Close", command=win.destroy).grid(row=row, column=0, columnspan=2, pady=(6, 2))
 
     def _worker(self, dur: float):
         try:
