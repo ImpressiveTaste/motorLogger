@@ -117,3 +117,12 @@ Set `USE_SCOPE = False` to run the GUI without hardware.
   variables.
 - Sample guard updated: minimum sample interval is 1 ms for all variables.
 
+
+## Resolver to Encoder Test App
+
+The repository also includes **ResolverEncoderApp.py**, a simplified GUI for logging resolver variables. It derives from the Motor Logger code and can be used to verify resolver functionality or capture data for calibration. The tool connects via `pyX2Cscope`, logs the raw and converted angles, and provides a one-click calibration request. Logged data can be saved as CSV for further analysis.
+
+Run it with:
+```bash
+python ResolverEncoderApp.py
+```
