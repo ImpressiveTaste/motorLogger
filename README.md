@@ -121,6 +121,10 @@ Set `USE_SCOPE = False` to run the GUI without hardware.
 ## Resolver to Encoder Test App
 
 The repository also includes **ResolverEncoderApp.py**, a simplified GUI for logging resolver variables. It derives from the Motor Logger code and can be used to verify resolver functionality or capture data for calibration. The tool connects via `pyX2Cscope`, logs the raw and converted angles, and provides a one-click calibration request. Logged data can be saved as CSV for further analysis.
+The GUI now also includes a *View Cal Values* button that opens a small window
+listing the calibration variables read from the target so you can reprogram the
+MCU with the correct values.
+The window lists global variables like `resolver.offset` and `resolver.status` from the MCU firmware.
 
 Run it with:
 ```bash
