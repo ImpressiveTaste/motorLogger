@@ -1,133 +1,202 @@
 #!/usr/bin/env python3
-"""Simple motor logger using pyX2Cscope.
+"""Tkinter GUI motor logger using pyX2Cscope.
 
-This script is derived from ``MotorLogger2.py`` but strips the GUI and
-scaling features in favour of a lightweight command line logger.  It
-illustrates the data acquisition technique demonstrated in the
-pyX2Cscope "Live Scope and saving data to CSV file" example: data from a
-set of variables is fetched using the scope interface, plotted live and
-finally written to a CSV file.
+This module provides a minimal graphical interface for capturing data from
+``pyX2Cscope``.  It is based on the command line version of MotorLogger4 but
+replaces all prompts with a simple GUI that allows the user to:
 
-The user is prompted for the serial port and ELF file path on start-up.
+* select the serial port and ELF file
+* start a capture and see the live plot of all channels
+* automatically store the captured samples in ``scope_data.csv``
+
+The example is intentionally compact and only demonstrates the basic technique
+for acquiring and plotting data from the scope interface.  It can serve as a
+starting point for richer applications.
 """
 
 from __future__ import annotations
 
 import csv
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List
 
 import serial.tools.list_ports
-import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 from pyx2cscope.x2cscope import X2CScope
 
 
-# ----------------------------------------------------------------------------
-# Helper utilities (replacing ``examples.utils``)
-# ----------------------------------------------------------------------------
+class MotorLoggerGUI:
+    """Simple Tkinter front end for ``pyX2Cscope`` logging."""
 
-def get_com_port() -> str:
-    """Prompt the user to select a serial port."""
-    ports = list(serial.tools.list_ports.comports())
-    if not ports:
-        raise RuntimeError("No serial ports found")
-    for idx, p in enumerate(ports):
-        print(f"{idx}: {p.device} - {p.description}")
-    try:
-        selection = int(input("Select COM port index: "))
-    except ValueError:
-        selection = 0
-    selection = max(0, min(selection, len(ports) - 1))
-    return ports[selection].device
+    def __init__(self) -> None:
+        logging.basicConfig(level=logging.INFO, filename=__file__ + ".log")
 
+        self.root = tk.Tk()
+        self.root.title("Motor Logger 4")
 
-def get_elf_file_path() -> str:
-    """Ask the user for the path to the application ELF file."""
-    path = input("Enter path to ELF file: ").strip()
-    if not path:
-        raise RuntimeError("ELF file path is required")
-    elf = Path(path)
-    if not elf.exists():
-        raise FileNotFoundError(f"ELF file not found: {elf}")
-    return str(elf)
+        self.port_var = tk.StringVar()
+        self.elf_var = tk.StringVar()
 
+        self._build_widgets()
 
-# ----------------------------------------------------------------------------
-# Main capture routine
-# ----------------------------------------------------------------------------
+        self.figure = Figure(figsize=(6, 4))
+        self.ax = self.figure.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
-def main() -> None:
-    # Set up logging
-    logging.basicConfig(level=logging.INFO, filename=__file__ + ".log")
+        # Storage for latest capture
+        self.data_storage: Dict[int, List[float]] = {}
 
-    # X2C Scope Set up
-    elf_file = get_elf_file_path()
-    x2c_scope = X2CScope(port=get_com_port(), elf_file=elf_file)
+    # ------------------------------------------------------------------ UI ----
+    def _build_widgets(self) -> None:
+        """Create and lay out the widgets."""
 
-    # Define variables (up to 8 may be selected)
-    variables: List[str] = [
-        "motor.idq.q",
-        "motor.vabc.a",
-        "motor.vabc.b",
-        "motor.vabc.c",
-        "motor.apiData.velocityMeasured",
-    ]
-    for var in variables:
-        x2c_scope.add_scope_channel(x2c_scope.get_variable(var))
+        frame = ttk.Frame(self.root, padding=10)
+        frame.pack(fill="x")
 
-    x2c_scope.set_sample_time(1)
+        # Port selection
+        port_frame = ttk.Frame(frame)
+        port_frame.pack(fill="x", pady=2)
+        ttk.Label(port_frame, text="COM Port:").pack(side="left")
+        self.port_combo = ttk.Combobox(port_frame, textvariable=self.port_var, width=20)
+        self._refresh_ports()
+        self.port_combo.pack(side="left", padx=5)
+        ttk.Button(port_frame, text="Refresh", command=self._refresh_ports).pack(
+            side="left"
+        )
 
-    # Create the plot
-    plt.ion()
-    fig, ax = plt.subplots()
+        # ELF file selector
+        elf_frame = ttk.Frame(frame)
+        elf_frame.pack(fill="x", pady=2)
+        ttk.Label(elf_frame, text="ELF File:").pack(side="left")
+        ttk.Entry(elf_frame, textvariable=self.elf_var, width=40).pack(
+            side="left", padx=5, fill="x", expand=True
+        )
+        ttk.Button(elf_frame, text="Browse", command=self._browse_elf).pack(
+            side="left"
+        )
 
-    # Main loop
-    sample_count = 0
-    max_sample = 100
-    data_storage: Dict[int, List[float]] = {}
+        # Start button
+        self.start_btn = ttk.Button(frame, text="Start Capture", command=self.start)
+        self.start_btn.pack(pady=(8, 2))
 
-    try:
-        while sample_count < max_sample:
-            if x2c_scope.is_scope_data_ready():
-                sample_count += 1
-                logging.info("Scope data is ready.")
+    def _refresh_ports(self) -> None:
+        """Refresh the list of serial ports in the combobox."""
 
-                data_storage = {}
-                for channel, data in x2c_scope.get_scope_channel_data(
-                    valid_data=False
-                ).items():
-                    data_storage[channel] = data
+        ports = [p.device for p in serial.tools.list_ports.comports()]
+        self.port_combo["values"] = ports
+        if ports:
+            self.port_combo.current(0)
 
-                ax.clear()
-                for channel, data in data_storage.items():
-                    time_values = [i * 0.001 for i in range(len(data))]
-                    ax.plot(time_values, data, label=f"Channel {channel}")
+    def _browse_elf(self) -> None:
+        """Open a file dialog to select the ELF file."""
 
-                ax.set_xlabel("Time (ms)")
-                ax.set_ylabel("Value")
-                ax.set_title("Live Plot of Byte Data")
-                ax.legend()
+        path = filedialog.askopenfilename(title="Select ELF file")
+        if path:
+            self.elf_var.set(path)
 
-                plt.pause(0.001)
+    # -------------------------------------------------------------- Capture ----
+    def start(self) -> None:
+        """Validate inputs and start the capture thread."""
 
-                if sample_count >= max_sample:
-                    break
-                x2c_scope.request_scope_data()
+        port = self.port_var.get().strip()
+        elf_path = self.elf_var.get().strip()
 
-            time.sleep(0.1)
+        if not port:
+            messagebox.showerror("Motor Logger", "Please select a serial port")
+            return
+        if not elf_path:
+            messagebox.showerror("Motor Logger", "Please choose an ELF file")
+            return
+        if not Path(elf_path).exists():
+            messagebox.showerror("Motor Logger", f"ELF file not found: {elf_path}")
+            return
 
-    except Exception as exc:  # pragma: no cover - runtime guard
-        logging.error("Error in main loop: %s", exc)
-    finally:
-        plt.ioff()
-        plt.show()
+        self.start_btn.config(state="disabled")
+        thread = threading.Thread(target=self._capture_loop, args=(port, elf_path), daemon=True)
+        thread.start()
 
-    logging.info("Data collection complete.")
+    def _capture_loop(self, port: str, elf_file: str) -> None:
+        """Worker thread that performs the data capture."""
 
-    # Data Storage
-    if data_storage:
+        try:
+            x2c_scope = X2CScope(port=port, elf_file=elf_file)
+
+            variables: List[str] = [
+                "motor.idq.q",
+                "motor.vabc.a",
+                "motor.vabc.b",
+                "motor.vabc.c",
+                "motor.apiData.velocityMeasured",
+            ]
+            for var in variables:
+                x2c_scope.add_scope_channel(x2c_scope.get_variable(var))
+
+            x2c_scope.set_sample_time(1)
+            x2c_scope.request_scope_data()
+
+            sample_count = 0
+            max_sample = 100
+
+            while sample_count < max_sample:
+                if x2c_scope.is_scope_data_ready():
+                    sample_count += 1
+                    logging.info("Scope data is ready.")
+
+                    self.data_storage = {
+                        ch: data
+                        for ch, data in x2c_scope.get_scope_channel_data(
+                            valid_data=False
+                        ).items()
+                    }
+
+                    self.root.after(0, self._update_plot, self.data_storage)
+
+                    if sample_count >= max_sample:
+                        break
+                    x2c_scope.request_scope_data()
+
+                time.sleep(0.1)
+
+            if self.data_storage:
+                self._save_csv(self.data_storage)
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Motor Logger", "Data collection complete. Saved to scope_data.csv"
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logging.error("Error in capture loop: %s", exc)
+            self.root.after(0, lambda: messagebox.showerror("Motor Logger", str(exc)))
+        finally:
+            self.root.after(0, lambda: self.start_btn.config(state="normal"))
+
+    def _update_plot(self, data_storage: Dict[int, List[float]]) -> None:
+        """Update the matplotlib plot with new data."""
+
+        self.ax.clear()
+        for channel, data in data_storage.items():
+            time_values = [i * 0.001 for i in range(len(data))]
+            self.ax.plot(time_values, data, label=f"Channel {channel}")
+
+        self.ax.set_xlabel("Time (ms)")
+        self.ax.set_ylabel("Value")
+        self.ax.set_title("Live Plot of Byte Data")
+        self.ax.legend()
+
+        self.canvas.draw()
+
+    def _save_csv(self, data_storage: Dict[int, List[float]]) -> None:
+        """Save the captured data to ``scope_data.csv``."""
+
         csv_file_path = "scope_data.csv"
         max_length = max(len(data) for data in data_storage.values())
 
@@ -137,9 +206,7 @@ def main() -> None:
             for i in range(max_length):
                 row = {
                     channel: (
-                        data_storage[channel][i]
-                        if i < len(data_storage[channel])
-                        else None
+                        data_storage[channel][i] if i < len(data_storage[channel]) else None
                     )
                     for channel in data_storage
                 }
@@ -147,6 +214,20 @@ def main() -> None:
 
         logging.info("Data saved in %s", csv_file_path)
 
+    # ----------------------------------------------------------------- main ----
+    def run(self) -> None:
+        """Start the Tkinter event loop."""
+
+        self.root.mainloop()
+
+
+def main() -> None:
+    """Entry point that launches the GUI."""
+
+    gui = MotorLoggerGUI()
+    gui.run()
+
 
 if __name__ == "__main__":
     main()
+
