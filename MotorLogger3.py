@@ -4,7 +4,6 @@ pyX2Cscope motor logger GUI  –  with per-channel scaling
 =======================================================
 
 • Start / stop the motor and set a target speed (RPM)
-• Live display of measured and commanded speed
 • Logs five MCAF variables for a user-defined duration:
     ─ motor.idqCmd.q        (Q-axis torque command)
     ─ motor.idq.q           (Q-axis measured current)
@@ -46,23 +45,20 @@ try:
 except ImportError:  # pragma: no cover
     sio = None  # type: ignore
 
-# ─── Switch between real X2CScope and dummy backend ──────────────────────────
-# The real hardware backend is provided by ``pyx2cscope``.  If the library is
-# not available we gracefully fall back to a dummy backend so the GUI can still
-# be launched without hardware attached.
-USE_SCOPE = True
-try:  # pragma: no cover - exercised only when pyx2cscope is present
-    from pyx2cscope.x2cscope import X2CScope
-except Exception:  # pylint: disable=broad-except
-    USE_SCOPE = False
-    X2CScope = object  # type: ignore
+# Optional: load base control-loop Ts from data-model-dump.yaml
+try:
+    import yaml  # type: ignore
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore
 
-# ─── Sample interval limitations ----------------------------------------------
-# Scope channel logging supports capturing all enabled variables at 1 ms.
-# When the sample guard is enabled, the GUI blocks intervals shorter than
-# ``MIN_DELAY_MS``.
+# ─── Switch between real X2CScope and dummy backend ──────────────────────────
+USE_SCOPE = True
+if USE_SCOPE:
+    from pyx2cscope.x2cscope import X2CScope
+
+# ─── Sample interval limitations ---------------------------------------------
 DEFAULT_ENFORCE_SAMPLE_LIMIT = True
-MIN_DELAY_MS = 1  # minimum sample interval in ms
+MIN_DELAY_MS = 1  # minimum desired GUI interval in ms (will be converted to prescaler)
 
 # ─── Variable paths we want to log ───────────────────────────────────────────
 VAR_PATHS = {
@@ -72,14 +68,12 @@ VAR_PATHS = {
     "OmegaElectrical": "motor.omegaElectrical",
     "OmegaCmd":        "motor.omegaCmd",
 }
-
-# Reverse lookup: "motor.idqCmd.q" -> "idqCmd_q"
 PATH_TO_KEY = {v: k for k, v in VAR_PATHS.items()}
 
 # Control & read-back paths
 HWUI_VAR     = "app.hardwareUiEnabled"
 VEL_CMD_VAR  = "motor.apiData.velocityReference"   # counts
-VEL_MEAS_VAR = "motor.apiData.velocityMeasured"    # counts
+# VEL_MEAS_VAR = "motor.apiData.velocityMeasured"  # (no live polling)
 RUN_REQ_VAR  = "motor.apiData.runMotorRequest"
 STOP_REQ_VAR = "motor.apiData.stopMotorRequest"
 
@@ -93,10 +87,9 @@ class _DummyVar:
 
 class _ScopeWrapper:
     """Hides real / dummy selection."""
-
     def __init__(self):
         self._scope: Union[X2CScope, None] = None
-        # Optional base control-loop period override (µs)
+        # If available, GUI can set this based on data-model-dump.yaml
         self.base_us_override: float | None = None
 
     def connect(self, port: str, elf: str):
@@ -119,13 +112,10 @@ class _ScopeWrapper:
     # Scope channel helpers -------------------------------------------------
     def prepare_scope(self, vars: List[object], sample_ms: int):
         """Configure scope channels and sampling interval.
-
-        Returns the actual sample period in microseconds as reported by
-        ``get_scope_sample_time``.  ``None`` is returned if the scope is not
-        active."""
+        Returns (prescaler, base_us)."""
         if not USE_SCOPE or self._scope is None:
-            return None
-        # pyX2Cscope renamed the clearing helper across releases; try a few.
+            return
+        # pyX2Cscope renamed this helper in newer releases
         if hasattr(self._scope, "clear_scope_channels"):
             self._scope.clear_scope_channels()
         elif hasattr(self._scope, "clear_all_scope_channel"):
@@ -136,36 +126,33 @@ class _ScopeWrapper:
         for var in vars:
             self._scope.add_scope_channel(var)
 
-        # Convert desired GUI milliseconds into X2CScope prescaler
-        # ``base_us_override`` may be explicitly set to ``None``; fall back to
-        # the default 50 µs period in that case to avoid ``TypeError`` when
-        # computing the prescaler.
-        base_us = self.base_us_override if self.base_us_override is not None else 50.0
+        # Convert desired GUI milliseconds to X2Cscope prescaler
+        base_us = getattr(self, "base_us_override", 50.0)  # fallback 50 µs if not known
         desired_us = max(int(sample_ms), 1) * 1000
         prescaler = max(int(round(desired_us / base_us)) - 1, 0)
 
         self._scope.set_sample_time(prescaler)
         self._scope.request_scope_data()
 
-        # Ask firmware for the real sample time.  Fall back to a manual
-        # calculation if the helper is unavailable.
-        try:
-            ts_us = float(self._scope.get_scope_sample_time())
-        except Exception:  # pragma: no cover - depends on hw
-            ts_us = (prescaler + 1) * base_us
-
-        return ts_us
+        # Expose timing so caller can compute true dt
+        return prescaler, base_us
 
     def scope_ready(self) -> bool:
         if not USE_SCOPE or self._scope is None:
             return False
-        return bool(self._scope.is_scope_data_ready())
+        try:
+            return bool(self._scope.is_scope_data_ready())
+        except Exception:
+            return False
 
     def get_scope_data(self):
         if not USE_SCOPE or self._scope is None:
             return {}
         # Only return valid, aligned frames
-        return self._scope.get_scope_channel_data(valid_data=True)
+        try:
+            return self._scope.get_scope_channel_data(valid_data=True)
+        except Exception:
+            return {}
 
     def request_scope_data(self):
         if USE_SCOPE and self._scope:
@@ -173,8 +160,8 @@ class _ScopeWrapper:
 
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
-    GUI_POLL_MS = 500        # live RPM update
-    DEFAULT_DT  = 25         # desired ms sample interval
+    GUI_POLL_MS = 500        # (unused now that live polling is removed)
+    DEFAULT_DT  = 1          # desired ms (converted to prescaler)
 
     def __init__(self):
         self.root = tk.Tk()
@@ -189,11 +176,14 @@ class MotorLoggerGUI:
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
         self.selected_vars = list(VAR_PATHS)
         self.enforce_limit = DEFAULT_ENFORCE_SAMPLE_LIMIT
+        self.scope_issue: str | None = None
+        self.expected_samples: int = 0
+        self.actual_samples: int = 0
 
         self._build_widgets()
+        self.scope_dt = self.DEFAULT_DT / 1000.0  # seconds, default until prepare_scope runs
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._poll_job: str | None = None
-        self._poll_gui()
+        # (no _poll_gui scheduling)
 
     # ── GUI layout ─────────────────────────────────────────────────────────
     def _build_widgets(self):
@@ -234,30 +224,64 @@ class MotorLoggerGUI:
             e.grid(row=r, column=1, padx=6, pady=2)
             self._lock_widgets.append(e)
             return e
-        self.speed_entry  = _row("Speed (RPM):",      "1500", 0)
+        self.speed_entry  = _row("Speed (RPM):",      "2800", 0)
+        ttk.Label(parms, text="min 1088 RPM - max 5000 RPM").grid(row=0, column=2, sticky="w")
         self.scale_entry  = _row("Scale (RPM/cnt):",  "0.19913", 1)
-        self.dur_entry    = _row("Log time (s):",     "5",    2)
+        self.dur_entry    = _row("Test time (s):",     "10",    2)
         self.sample_entry = _row("Sample every (ms):", str(self.DEFAULT_DT), 3)
-        ttk.Label(parms, text="≥1 ms total").grid(row=3, column=2, sticky="w")
+        ttk.Label(parms, text="Converted to firmware-timed prescaler").grid(row=3, column=2, sticky="w")
         ttk.Button(parms, text="?", width=2, command=self._show_sample_info).grid(row=3, column=3, padx=(2,0))
 
         # Buttons
-        btn = ttk.Frame(main); btn.pack(pady=(6, 2))
-        self.start_btn = ttk.Button(btn, text="START ▶", width=12, command=self._start_capture, state="disabled"); self.start_btn.pack(side="left", padx=2)
-        self.stop_btn  = ttk.Button(btn, text="STOP ■",  width=12, command=self._stop_capture,  state="disabled"); self.stop_btn.pack(side="left", padx=2)
-        self.curr_btn  = ttk.Button(btn, text="Currents", width=10, command=self._plot_currents, state="disabled"); self.curr_btn.pack(side="left", padx=2)
-        self.omega_btn = ttk.Button(btn, text="Omega",    width=10, command=self._plot_omega,    state="disabled"); self.omega_btn.pack(side="left", padx=2)
-        self.save_btn  = ttk.Button(btn, text="Save…",    width=8,  command=self._save,          state="disabled"); self.save_btn.pack(side="left", padx=2)
+        btn = ttk.Frame(main)
+        btn.pack(pady=(6, 2))
+        self.start_btn = ttk.Button(
+            btn, text="START ▶", width=12, command=self._start_capture, state="disabled"
+        )
+        self.start_btn.pack(side="left", padx=2)
+        self.stop_btn = ttk.Button(
+            btn, text="STOP ■", width=12, command=self._stop_capture, state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=2)
+        self.curr_btn = ttk.Button(
+            btn, text="Currents", width=10, command=self._plot_currents, state="disabled"
+        )
+        self.curr_btn.pack(side="left", padx=2)
+        self.omega_btn = ttk.Button(
+            btn, text="Omega", width=10, command=self._plot_omega, state="disabled"
+        )
+        self.omega_btn.pack(side="left", padx=2)
+        self.save_btn = ttk.Button(
+            btn, text="Save…", width=8, command=self._save, state="disabled"
+        )
+        self.save_btn.pack(side="left", padx=2)
 
-        # Status / live RPM
+        # Status line and data validity info
+        status_frame = ttk.Frame(main)
+        status_frame.pack(fill="x", pady=(0, 8))
+
         self.status = tk.StringVar(value="Idle – not connected")
-        ttk.Label(main, textvariable=self.status).pack(pady=(0, 4))
-        read = ttk.Frame(main); read.pack(pady=(0, 8))
-        ttk.Label(read, text="Measured speed:").grid(row=0, column=0, sticky="e")
-        ttk.Label(read, text="Command speed:").grid (row=1, column=0, sticky="e")
-        self.meas_str = tk.StringVar(value="—"); self.cmd_str = tk.StringVar(value="—")
-        ttk.Label(read, textvariable=self.meas_str, width=22, anchor="w").grid(row=0, column=1, padx=6)
-        ttk.Label(read, textvariable=self.cmd_str,  width=22, anchor="w").grid(row=1, column=1, padx=6)
+        ttk.Label(status_frame, textvariable=self.status).pack(side="left")
+
+        self.validity_var = tk.StringVar(value="No data")
+        self.validity_label = tk.Label(
+            status_frame,
+            textvariable=self.validity_var,
+            width=12,
+            bg="gray",
+            fg="white",
+            relief="groove",
+        )
+        self.validity_label.pack(side="left", padx=6)
+
+        self.issue_var = tk.StringVar(value="")
+        ttk.Label(status_frame, textvariable=self.issue_var, wraplength=400, foreground="red").pack(
+            side="left", padx=6
+        )
+
+        ttk.Button(status_frame, text="?", width=2, command=self._show_possible_problem).pack(
+            side="right"
+        )
 
         # Per-channel scaling ------------------------------------------------
         ttk.Label(parms, text="Channel Scaling:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
@@ -272,7 +296,15 @@ class MotorLoggerGUI:
             chk.grid(row=r, column=0, padx=(0,4))
             self._lock_widgets.append(chk)
             ttk.Label(tbl, text=name, width=15).grid(row=r, column=1, sticky="e", pady=2)
-            sv = tk.StringVar(value="1.0"); self.scale_vars[name] = sv
+
+            if name in ("idqCmd_q", "Idq_q", "Idq_d"):
+                sv = tk.StringVar(value="0.0003125")
+            elif name in ("OmegaElectrical", "OmegaCmd"):
+                sv = tk.StringVar(value="1.0")
+            else:
+                sv = tk.StringVar(value="1.0")
+            self.scale_vars[name] = sv
+
             ent = ttk.Entry(tbl, textvariable=sv, width=10)
             ent.grid(row=r, column=2, sticky="w", padx=6)
             self._lock_widgets.append(ent)
@@ -313,9 +345,18 @@ class MotorLoggerGUI:
         """Explain sample interval limitations."""
         messagebox.showinfo(
             "Sample rate limits",
-            "Scope channels allow logging all selected variables at 1 ms.\n"
-            "The GUI enforces a 1 ms minimum interval by default.\n"
-            "Use the experimental button if you want to try faster rates.",
+            "The GUI interval (ms) is converted to the scope prescaler relative to the firmware ISR.\n"
+            "Minimum allowed is 1 ms by default. The actual sampling period is shown in the status bar."
+        )
+
+    def _show_possible_problem(self):
+        """Hint at common sampling issues."""
+        messagebox.showinfo(
+            "Possible issue",
+            (
+                "A common problem is that the sampling rate is too fast for the number of "
+                "variables sampled. Try selecting fewer variables or increasing the sampling interval."
+            ),
         )
 
     # ── Connection handling ───────────────────────────────────────────────
@@ -332,7 +373,7 @@ class MotorLoggerGUI:
             # Grab variables
             self.hwui     = self.scope.get_variable(HWUI_VAR)
             self.cmd_var  = self.scope.get_variable(VEL_CMD_VAR)
-            self.meas_var = self.scope.get_variable(VEL_MEAS_VAR)
+            # self.meas_var = self.scope.get_variable(VEL_MEAS_VAR)  # no live polling
             self.run_var  = self.scope.get_variable(RUN_REQ_VAR)
             self.stop_var = self.scope.get_variable(STOP_REQ_VAR)
             self.mon_vars = {k: self.scope.get_variable(p) for k, p in VAR_PATHS.items()}
@@ -340,15 +381,37 @@ class MotorLoggerGUI:
             if missing:
                 raise RuntimeError("Symbols not in ELF:\n  • " + "\n  • ".join(missing))
             self.hwui.set_value(0)  # disable on-board HMI
+
+            # Try to load base control-loop Ts (current) from data-model-dump.yaml
+            try:
+                elf_path = pathlib.Path(self.elf_path.get())
+                dm_file = next((p / "data-model-dump.yaml" for p in elf_path.parents
+                                if (p / "data-model-dump.yaml").is_file()), None)
+                if dm_file and yaml is not None:
+                    with open(dm_file, "r", encoding="utf-8") as f:
+                        _dm = yaml.load(f, Loader=yaml.FullLoader)
+                    base_us = float(_dm["drive"]["sampling_time"]["current"]) * 1e6
+                    self.scope.base_us_override = float(base_us)
+                    self.status.set(f"Connected ({port}) – ISR: {base_us:.0f} µs")
+                else:
+                    self.status.set(f"Connected ({port}) – ISR: 50 µs (default)")
+            except Exception:
+                self.status.set(f"Connected ({port}) – ISR: 50 µs (default)")
+
         except Exception as e:
             messagebox.showerror("Connect", str(e)); self.scope.disconnect(); return
         # UI
         self.connected = True
         self.conn_btn.config(text="Disconnect"); self.start_btn.config(state="normal")
-        self.status.set(f"Connected ({port})")
 
     def _disconnect(self):
         self._stop_capture()
+        # Try to deassert run/stop on exit
+        try:
+            if hasattr(self, "run_var"):  self.run_var.set_value(0)
+            if hasattr(self, "stop_var"): self.stop_var.set_value(0)
+        except Exception:
+            pass
         self.scope.disconnect()
         self.connected = False
         for b in (self.start_btn, self.stop_btn, self.curr_btn, self.omega_btn, self.save_btn):
@@ -369,7 +432,7 @@ class MotorLoggerGUI:
         if USE_SCOPE and not self.connected:
             messagebox.showwarning("Not connected", "Connect to a target first"); return
 
-        # Update scale factors from Scaling tab
+        # Update scale factors from Scaling table
         for k in VAR_PATHS:
             try:
                 self.scale_factors[k] = float(self.scale_vars[k].get())
@@ -381,17 +444,29 @@ class MotorLoggerGUI:
         if not self.selected_vars:
             messagebox.showwarning("Variables", "Select at least one variable")
             return
-        if self.enforce_limit:
-            if dt_ms < MIN_DELAY_MS:
-                messagebox.showwarning(
-                    "Sample interval",
-                    f"Minimum allowed interval is {MIN_DELAY_MS:.0f} ms",
-                )
-                return
+        if self.enforce_limit and dt_ms < MIN_DELAY_MS:
+            messagebox.showwarning("Sample interval", f"Minimum allowed interval is {MIN_DELAY_MS:.0f} ms")
+            return
+
         self.data = {k: [] for k in self.selected_vars}
         self.data["t"] = []
-        self.data["MotorRunning"] = []  # 1 when spinning, 0 after stop command
-        self._stop_flag.clear(); self.ts = dt_ms / 1000.0
+        self.data["MotorRunning"] = []
+        self._stop_flag.clear()
+        self.ts = dt_ms / 1000.0
+        self.scope_issue = None
+        self.expected_samples = 0
+        self.actual_samples = 0
+        self.validity_label.config(text="Capturing…", bg="gray")
+        self.issue_var.set("")
+
+        # Ensure control lines are in a known state
+        try:
+            self.run_var.set_value(0)
+            self.stop_var.set_value(0)
+        except Exception:
+            pass
+
+        # Command speed in counts using GUI scale (for consistency)
         self.cmd_var.set_value(int(round(rpm/scale)))
 
         self._cap_thread = threading.Thread(target=self._worker, args=(dur,), daemon=True)
@@ -403,78 +478,134 @@ class MotorLoggerGUI:
         for w in self._lock_widgets:
             w.config(state="disabled")
 
-    def _stop_capture(self): self._stop_flag.set()
+    def _stop_capture(self):
+        self._stop_flag.set()
+        try:
+            self.run_var.set_value(0)
+            self.stop_var.set_value(1)
+        except Exception:
+            pass
 
     def _worker(self, dur: float):
         """Background capture."""
-        PRE_START = 0.5  # capture before sending run command [s]
-        POST_STOP = 1.0  # capture after stop command [s]
+        PRE_START = 1.0  # capture before sending run command [s]
+        POST_STOP = 1.5  # capture after stop command [s]
 
         try:
             self.status.set("Running + logging…")
-            self.stop_var.set_value(0)
+            # Ensure clean state: both request lines low
+            try:
+                self.run_var.set_value(0)
+                self.stop_var.set_value(0)
+            except Exception:
+                pass
 
             t0 = time.perf_counter()
-            run_cmd_time = t0 + PRE_START
+            run_cmd_time  = t0 + PRE_START
             stop_cmd_time = run_cmd_time + dur
-            end_time = stop_cmd_time + POST_STOP
+            end_time      = stop_cmd_time + POST_STOP
+            target_total  = PRE_START + dur + POST_STOP
 
             # Configure scope for fast multi-channel capture
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
-            res = self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
-            if res:
-                # convert microseconds to seconds for our time vector
-                self.ts = res / 1_000_000.0
-                fs = 1.0 / self.ts
+            prep = self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+            # Compute the actual scope Δt used by X2Cscope
+            if isinstance(prep, tuple):
+                prescaler, base_us = prep
+                self.scope_dt = (base_us * (prescaler + 1)) / 1e6  # seconds
                 self.status.set(
-                    f"Running + logging… (Ts={self.ts*1000:.2f} ms, Fs={fs:.1f} Hz)"
+                    f"Sampling: {self.scope_dt*1e3:.3f} ms (base {base_us:.0f} µs, presc {prescaler})"
+                )
+            else:
+                self.scope_dt = self.ts
+            # Expected sample count using the actual scope interval
+            # (scope_dt may differ slightly from the user request)
+            self.expected_samples = int(round(target_total / self.scope_dt))
+            if abs(self.scope_dt - self.ts) > (self.ts * 0.05):
+                self.scope_issue = (
+                    f"Sample time differs: requested {self.ts*1e3:.3f} ms, "
+                    f"got {self.scope_dt*1e3:.3f} ms"
                 )
 
-            total_window = PRE_START + dur + POST_STOP
-            self.expected_samples = int(total_window / self.ts)
-
             sample_idx = 0
-            run_sent = False
-            stop_sent = False
+            run_set = False
+            stop_set = False
 
-            while not self._stop_flag.is_set() and time.perf_counter() < end_time:
+            while not self._stop_flag.is_set() and (
+                time.perf_counter() < end_time or (sample_idx * self.scope_dt) < target_total
+            ):
                 now = time.perf_counter()
 
-                if not run_sent and now >= run_cmd_time:
-                    self.run_var.set_value(1)
-                    run_sent = True
-                if not stop_sent and now >= stop_cmd_time:
-                    self.stop_var.set_value(1)
-                    stop_sent = True
+                # Assert RUN and keep it high through the test window
+                if not run_set and now >= run_cmd_time:
+                    try:
+                        self.run_var.set_value(1)
+                        run_set = True
+                    except Exception:
+                        pass
 
-                running = run_cmd_time <= now < stop_cmd_time
+                # Assert STOP at the end of the test window and keep it high
+                if not stop_set and now >= stop_cmd_time:
+                    try:
+                        self.stop_var.set_value(1)
+                        stop_set = True
+                    except Exception:
+                        pass
 
                 if self.scope.scope_ready():
                     chans = self.scope.get_scope_data()
-                    self.scope.request_scope_data()          # start next capture
+                    self.scope.request_scope_data()  # queue next frame
+
                     if chans:
+                        retrieved_keys = {PATH_TO_KEY.get(str(ch)) for ch in chans.keys()}
+                        expected_keys = set(self.selected_vars)
+                        if retrieved_keys != expected_keys and self.scope_issue is None:
+                            self.scope_issue = (
+                                "Scope channels mismatch: "
+                                f"expected {sorted(expected_keys)}, got {sorted(k for k in retrieved_keys if k)}"
+                            )
+
                         n = len(next(iter(chans.values())))  # all lists are equal
+                        if any(len(vals) != n for vals in chans.values()) and self.scope_issue is None:
+                            self.scope_issue = "Unequal sample counts across channels"
 
-                        # time vector -------------------------------------
-                        self.data["t"].extend(
-                            [(sample_idx + i) * self.ts for i in range(n)]
-                        )
+                        dt = getattr(self, "scope_dt", self.ts)
+
+                        # time vector
+                        self.data["t"].extend((sample_idx + i) * dt for i in range(n))
+
+                        # per-sample MotorRunning flag
+                        pre  = PRE_START
+                        post = PRE_START + dur
                         self.data["MotorRunning"].extend(
-                            [1 if running else 0] * n
+                            1 if pre <= ((sample_idx + i) * dt) < post else 0
+                            for i in range(n)
                         )
-                        sample_idx += n
 
+                        # channels
                         for ch, vals in chans.items():
                             if not vals:
                                 continue
-                            key = PATH_TO_KEY.get(ch)      # ch is the full path string
-                            if key is None:                # a channel we don’t care about
+                            key = PATH_TO_KEY.get(str(ch))
+                            if key is None:
                                 continue
                             scale = self.scale_factors[key]
                             self.data[key].extend(v * scale for v in vals)
 
+                        sample_idx += n
 
                 time.sleep(0.25)
+
+            self.actual_samples = sample_idx
+
+            # Optionally deassert RUN/STOP at the very end
+            try:
+                if run_set:
+                    self.run_var.set_value(0)
+                self.stop_var.set_value(0)
+            except Exception:
+                pass
+
         finally:
             try:
                 if self.root.winfo_exists():
@@ -488,7 +619,6 @@ class MotorLoggerGUI:
 
         if self.data.get("t"):
             t_len = len(self.data["t"])
-
             for k in list(self.data.keys()):
                 if k == "t":
                     continue
@@ -506,33 +636,32 @@ class MotorLoggerGUI:
                 self.omega_btn.config(state="disabled")
 
             self.save_btn.config(state="normal")
+            if self.actual_samples and self.expected_samples and self.actual_samples != self.expected_samples:
+                msg = (
+                    f"Expected {self.expected_samples} samples, "
+                    f"got {self.actual_samples}"
+                )
+                if self.scope_issue:
+                    self.scope_issue += "; " + msg
+                else:
+                    self.scope_issue = msg
+            if self.scope_issue:
+                messagebox.showwarning("Scope", self.scope_issue)
+                self.validity_label.config(text="Invalid Data", bg="red")
+                self.issue_var.set(self.scope_issue)
+            else:
+                self.validity_label.config(text="Valid Data", bg="green")
+                self.issue_var.set("No issues detected")
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
+            self.validity_label.config(text="Invalid Data", bg="red")
+            self.issue_var.set("No data captured")
 
         for w in self._lock_widgets:
             w.config(state="normal")
 
-    # ── Live RPM polling ─────────────────────────────────────────────────
-    def _poll_gui(self):
-        try:
-            if not self.root.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        if self._cap_thread and self._cap_thread.is_alive():
-            self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui); return
-        if self.connected:
-            try:
-                cnt_meas = self.meas_var.get_value(); cnt_cmd = self.cmd_var.get_value()
-                scale = float(self.scale_entry.get())
-                self.meas_str.set(f"{cnt_meas*scale:+.0f} RPM ({cnt_meas})")
-                self.cmd_str .set(f"{cnt_cmd *scale:+.0f} RPM ({cnt_cmd})")
-            except Exception:
-                self.meas_str.set("—"); self.cmd_str.set("—")
-        else:
-            self.meas_str.set("—"); self.cmd_str.set("—")
-        self._poll_job = self.root.after(self.GUI_POLL_MS, self._poll_gui)
+    # (No _poll_gui method anymore)
 
     # ── Plot & save ──────────────────────────────────────────────────────
     def _plot_currents(self):
@@ -541,24 +670,19 @@ class MotorLoggerGUI:
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
         plotted = False
         for k, lbl in (
             ("idqCmd_q", "idqCmd.q [A]"),
             ("Idq_q",    "idq.q [A]"),
             ("Idq_d",    "idq.d [A]"),
         ):
-            if (
-                k in self.data
-                and self.data[k]            # not empty
-                and len(self.data[k]) == len(t)
-            ):
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data and self.data[k]:
+                ax.plot(range(len(self.data[k])), self.data[k], label=lbl, linewidth=0.9)
                 plotted = True
 
         if not plotted:
             messagebox.showinfo("Plot", "No valid current data to plot."); return
-        ax.set_xlabel("Time [s]")
+        ax.set_xlabel("Sample #")
         ax.set_ylabel("Current [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
         ax.legend(fontsize="small")
@@ -572,24 +696,19 @@ class MotorLoggerGUI:
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
         plotted = False
         for k, lbl in (
-            ("OmegaElectrical", "omegaElectrical [RPM]"),
-            ("OmegaCmd",        "omegaCmd [RPM]"),
+            ("OmegaElectrical", "omegaElectrical [scaled]"),
+            ("OmegaCmd",        "omegaCmd [scaled]"),
         ):
-            if (
-                k in self.data
-                and self.data[k]            # not empty
-                and len(self.data[k]) == len(t)
-            ):
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data and self.data[k]:
+                ax.plot(range(len(self.data[k])), self.data[k], label=lbl, linewidth=0.9)
                 plotted = True
 
         if not plotted:
             messagebox.showinfo("Plot", "No valid omega data to plot."); return
-        ax.set_xlabel("Time [s]")
-        ax.set_ylabel("Omega [scaled]")
+        ax.set_xlabel("Sample #")
+        ax.set_ylabel("Speed [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
         ax.legend(fontsize="small")
         win = tk.Toplevel(self.root); win.title("Omega traces")
@@ -621,13 +740,14 @@ class MotorLoggerGUI:
     def _on_close(self):
         try:
             self._stop_flag.set()
-            if self._poll_job is not None:
-                try:
-                    self.root.after_cancel(self._poll_job)
-                except Exception:
-                    pass
             if self._cap_thread and self._cap_thread.is_alive():
                 self._cap_thread.join(timeout=2)
+            try:
+                # attempt to deassert requests on exit
+                if hasattr(self, "run_var"):  self.run_var.set_value(0)
+                if hasattr(self, "stop_var"): self.stop_var.set_value(0)
+            except Exception:
+                pass
             self.scope.disconnect()
         finally:
             try:
@@ -643,3 +763,4 @@ if __name__ == "__main__":
         gui.root.mainloop()
     except KeyboardInterrupt:
         gui._on_close()
+
