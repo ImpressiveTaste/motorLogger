@@ -96,6 +96,8 @@ class _ScopeWrapper:
 
     def __init__(self):
         self._scope: Union[X2CScope, None] = None
+        # Optional base control-loop period override (µs)
+        self.base_us_override: float | None = None
 
     def connect(self, port: str, elf: str):
         if USE_SCOPE:
@@ -116,7 +118,9 @@ class _ScopeWrapper:
 
     # Scope channel helpers -------------------------------------------------
     def prepare_scope(self, vars: List[object], sample_ms: int):
-        """Configure scope channels and sampling interval."""
+        """Configure scope channels and sampling interval.
+
+        Returns (prescaler, base_us) so caller can compute the true dt."""
         if not USE_SCOPE or self._scope is None:
             return None
         # pyX2Cscope renamed the clearing helper across releases; try a few.
@@ -126,10 +130,19 @@ class _ScopeWrapper:
             self._scope.clear_all_scope_channel()
         elif hasattr(self._scope, "clear_all_scope_channels"):
             self._scope.clear_all_scope_channels()
+
         for var in vars:
             self._scope.add_scope_channel(var)
-        self._scope.set_sample_time(sample_ms)
+
+        # Convert desired GUI milliseconds into X2CScope prescaler
+        base_us = getattr(self, "base_us_override", 50.0)  # default 50 µs
+        desired_us = max(int(sample_ms), 1) * 1000
+        prescaler = max(int(round(desired_us / base_us)) - 1, 0)
+
+        self._scope.set_sample_time(prescaler)
         self._scope.request_scope_data()
+
+        return prescaler, base_us
 
     def scope_ready(self) -> bool:
         if not USE_SCOPE or self._scope is None:
@@ -139,7 +152,8 @@ class _ScopeWrapper:
     def get_scope_data(self):
         if not USE_SCOPE or self._scope is None:
             return {}
-        return self._scope.get_scope_channel_data(valid_data=False)
+        # Only return valid, aligned frames
+        return self._scope.get_scope_channel_data(valid_data=True)
 
     def request_scope_data(self):
         if USE_SCOPE and self._scope:
@@ -148,7 +162,7 @@ class _ScopeWrapper:
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
     GUI_POLL_MS = 500        # live RPM update
-    DEFAULT_DT  = 5          # ms sample interval
+    DEFAULT_DT  = 1          # desired ms sample interval
 
     def __init__(self):
         self.root = tk.Tk()
@@ -395,7 +409,11 @@ class MotorLoggerGUI:
 
             # Configure scope for fast multi-channel capture
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
-            self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+            res = self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+            if res:
+                prescaler, base_us = res
+                # convert prescaler back to seconds for our time vector
+                self.ts = (prescaler + 1) * base_us / 1_000_000.0
 
             total_window = PRE_START + dur + POST_STOP
             self.expected_samples = int(total_window / self.ts)
