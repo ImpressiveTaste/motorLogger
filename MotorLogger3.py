@@ -137,7 +137,10 @@ class _ScopeWrapper:
             self._scope.add_scope_channel(var)
 
         # Convert desired GUI milliseconds into X2CScope prescaler
-        base_us = getattr(self, "base_us_override", 50.0)  # default 50 µs
+        # ``base_us_override`` may be explicitly set to ``None``; fall back to
+        # the default 50 µs period in that case to avoid ``TypeError`` when
+        # computing the prescaler.
+        base_us = self.base_us_override if self.base_us_override is not None else 50.0
         desired_us = max(int(sample_ms), 1) * 1000
         prescaler = max(int(round(desired_us / base_us)) - 1, 0)
 
@@ -171,7 +174,7 @@ class _ScopeWrapper:
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
     GUI_POLL_MS = 500        # live RPM update
-    DEFAULT_DT  = 1          # desired ms sample interval
+    DEFAULT_DT  = 25         # desired ms sample interval
 
     def __init__(self):
         self.root = tk.Tk()
