@@ -1,233 +1,251 @@
 #!/usr/bin/env python3
-"""Tkinter GUI motor logger using pyX2Cscope.
+"""Run motor for 10 s and log scope data using pyX2Cscope.
 
-This module provides a minimal graphical interface for capturing data from
-``pyX2Cscope``.  It is based on the command line version of MotorLogger4 but
-replaces all prompts with a simple GUI that allows the user to:
+This standalone script connects to a target via ``pyX2Cscope``, starts the
+motor for exactly ten seconds while streaming scope channels as fast as
+possible, then stops the motor and stores the captured samples in
+``scope_data.csv``.
 
-* select the serial port and ELF file
-* start a capture and see the live plot of all channels
-* automatically store the captured samples in ``scope_data.csv``
-
-The example is intentionally compact and only demonstrates the basic technique
-for acquiring and plotting data from the scope interface.  It can serve as a
-starting point for richer applications.
+It expects only the standard library plus ``pyserial`` and ``pyx2cscope``
+(plus optional ``matplotlib`` for plotting).  No other files are required.
 """
-
 from __future__ import annotations
 
+import argparse
 import csv
-import logging
-import threading
+import sys
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import serial.tools.list_ports
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
 from pyx2cscope.x2cscope import X2CScope
 
+try:  # optional plotting
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover - plotting is optional
+    plt = None
 
-class MotorLoggerGUI:
-    """Simple Tkinter front end for ``pyX2Cscope`` logging."""
+# ---------------------------------------------------------------------------
+# Variable definitions
+MONITOR_VARS = [
+    ("idqCmd_q", "motor.idqCmd.q"),
+    ("Idq_q", "motor.idq.q"),
+    ("Idq_d", "motor.idq.d"),
+    ("OmegaElectrical", "motor.omegaElectrical"),
+    ("OmegaCmd", "motor.omegaCmd"),
+]
 
-    def __init__(self) -> None:
-        logging.basicConfig(level=logging.INFO, filename=__file__ + ".log")
+CONTROL_VARS = {
+    "hardware_ui": "app.hardwareUiEnabled",
+    "velocity_ref": "motor.apiData.velocityReference",
+    "run_req": "motor.apiData.runMotorRequest",
+    "stop_req": "motor.apiData.stopMotorRequest",
+}
 
-        self.root = tk.Tk()
-        self.root.title("Motor Logger 4")
+# ---------------------------------------------------------------------------
 
-        self.port_var = tk.StringVar()
-        self.elf_var = tk.StringVar()
+def list_ports() -> List[str]:
+    """Return a list of available serial ports."""
+    return [p.device for p in serial.tools.list_ports.comports()]
 
-        self._build_widgets()
 
-        self.figure = Figure(figsize=(6, 4))
-        self.ax = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run motor for 10 s and log data")
+    parser.add_argument("--elf", help="Path to ELF file")
+    parser.add_argument("--port", help="Serial port (auto if not supplied)")
+    parser.add_argument(
+        "--baud",
+        type=int,
+        default=115200,
+        choices=[115200, 230400, 460800, 921600],
+        help="Baud rate",
+    )
+    parser.add_argument("--speed", type=float, help="Speed in RPM")
+    parser.add_argument("--scale", type=float, help="RPM per count")
+    args = parser.parse_args()
 
-        # Storage for latest capture
-        self.data_storage: Dict[int, List[float]] = {}
-
-    # ------------------------------------------------------------------ UI ----
-    def _build_widgets(self) -> None:
-        """Create and lay out the widgets."""
-
-        frame = ttk.Frame(self.root, padding=10)
-        frame.pack(fill="x")
-
-        # Port selection
-        port_frame = ttk.Frame(frame)
-        port_frame.pack(fill="x", pady=2)
-        ttk.Label(port_frame, text="COM Port:").pack(side="left")
-        self.port_combo = ttk.Combobox(port_frame, textvariable=self.port_var, width=20)
-        self._refresh_ports()
-        self.port_combo.pack(side="left", padx=5)
-        ttk.Button(port_frame, text="Refresh", command=self._refresh_ports).pack(
-            side="left"
-        )
-
-        # ELF file selector
-        elf_frame = ttk.Frame(frame)
-        elf_frame.pack(fill="x", pady=2)
-        ttk.Label(elf_frame, text="ELF File:").pack(side="left")
-        ttk.Entry(elf_frame, textvariable=self.elf_var, width=40).pack(
-            side="left", padx=5, fill="x", expand=True
-        )
-        ttk.Button(elf_frame, text="Browse", command=self._browse_elf).pack(
-            side="left"
-        )
-
-        # Start button
-        self.start_btn = ttk.Button(frame, text="Start Capture", command=self.start)
-        self.start_btn.pack(pady=(8, 2))
-
-    def _refresh_ports(self) -> None:
-        """Refresh the list of serial ports in the combobox."""
-
-        ports = [p.device for p in serial.tools.list_ports.comports()]
-        self.port_combo["values"] = ports
+    if not args.port:
+        ports = list_ports()
         if ports:
-            self.port_combo.current(0)
+            print("Available COM ports:")
+            for p in ports:
+                print(f"  {p}")
+            args.port = ports[0]
+            print(f"Using port: {args.port}")
+        else:
+            print("No serial ports found.")
+            args.port = input("Enter COM port: ").strip()
 
-    def _browse_elf(self) -> None:
-        """Open a file dialog to select the ELF file."""
+    if not args.elf:
+        args.elf = input("ELF file path: ").strip()
+    if not args.speed:
+        args.speed = float(input("Speed (RPM): "))
+    if not args.scale:
+        args.scale = float(input("Scale (RPM per count): "))
 
-        path = filedialog.askopenfilename(title="Select ELF file")
-        if path:
-            self.elf_var.set(path)
+    return args
 
-    # -------------------------------------------------------------- Capture ----
-    def start(self) -> None:
-        """Validate inputs and start the capture thread."""
 
-        port = self.port_var.get().strip()
-        elf_path = self.elf_var.get().strip()
-
-        if not port:
-            messagebox.showerror("Motor Logger", "Please select a serial port")
-            return
-        if not elf_path:
-            messagebox.showerror("Motor Logger", "Please choose an ELF file")
-            return
-        if not Path(elf_path).exists():
-            messagebox.showerror("Motor Logger", f"ELF file not found: {elf_path}")
-            return
-
-        self.start_btn.config(state="disabled")
-        thread = threading.Thread(target=self._capture_loop, args=(port, elf_path), daemon=True)
-        thread.start()
-
-    def _capture_loop(self, port: str, elf_file: str) -> None:
-        """Worker thread that performs the data capture."""
-
-        try:
-            x2c_scope = X2CScope(port=port, elf_file=elf_file)
-
-            variables: List[str] = [
-                "motor.idq.q",
-                "motor.vabc.a",
-                "motor.vabc.b",
-                "motor.vabc.c",
-                "motor.apiData.velocityMeasured",
-            ]
-            for var in variables:
-                x2c_scope.add_scope_channel(x2c_scope.get_variable(var))
-
-            x2c_scope.set_sample_time(1)
-            x2c_scope.request_scope_data()
-
-            sample_count = 0
-            max_sample = 100
-
-            while sample_count < max_sample:
-                if x2c_scope.is_scope_data_ready():
-                    sample_count += 1
-                    logging.info("Scope data is ready.")
-
-                    self.data_storage = {
-                        ch: data
-                        for ch, data in x2c_scope.get_scope_channel_data(
-                            valid_data=False
-                        ).items()
-                    }
-
-                    self.root.after(0, self._update_plot, self.data_storage)
-
-                    if sample_count >= max_sample:
-                        break
-                    x2c_scope.request_scope_data()
-
-                time.sleep(0.1)
-
-            if self.data_storage:
-                self._save_csv(self.data_storage)
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Motor Logger", "Data collection complete. Saved to scope_data.csv"
-                    ),
-                )
-        except Exception as exc:  # pragma: no cover - runtime guard
-            logging.error("Error in capture loop: %s", exc)
-            self.root.after(0, lambda: messagebox.showerror("Motor Logger", str(exc)))
-        finally:
-            self.root.after(0, lambda: self.start_btn.config(state="normal"))
-
-    def _update_plot(self, data_storage: Dict[int, List[float]]) -> None:
-        """Update the matplotlib plot with new data."""
-
-        self.ax.clear()
-        for channel, data in data_storage.items():
-            time_values = [i * 0.001 for i in range(len(data))]
-            self.ax.plot(time_values, data, label=f"Channel {channel}")
-
-        self.ax.set_xlabel("Time (ms)")
-        self.ax.set_ylabel("Value")
-        self.ax.set_title("Live Plot of Byte Data")
-        self.ax.legend()
-
-        self.canvas.draw()
-
-    def _save_csv(self, data_storage: Dict[int, List[float]]) -> None:
-        """Save the captured data to ``scope_data.csv``."""
-
-        csv_file_path = "scope_data.csv"
-        max_length = max(len(data) for data in data_storage.values())
-
-        with open(csv_file_path, mode="w", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=data_storage.keys())
-            writer.writeheader()
-            for i in range(max_length):
-                row = {
-                    channel: (
-                        data_storage[channel][i] if i < len(data_storage[channel]) else None
-                    )
-                    for channel in data_storage
-                }
-                writer.writerow(row)
-
-        logging.info("Data saved in %s", csv_file_path)
-
-    # ----------------------------------------------------------------- main ----
-    def run(self) -> None:
-        """Start the Tkinter event loop."""
-
-        self.root.mainloop()
-
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Entry point that launches the GUI."""
+    args = parse_args()
+    counts = args.speed / args.scale
 
-    gui = MotorLoggerGUI()
-    gui.run()
+    scope: Optional[X2CScope] = None
+    run_sent = False
+    stop_sent = False
+    var_handles: Dict[str, Optional[int]] = {}
+
+    try:
+        scope = X2CScope(port=args.port, baudrate=args.baud, elf_file=args.elf)
+        try:  # Older versions require explicit import
+            scope.import_variables(args.elf)
+        except Exception:
+            pass
+
+        # Resolve variable handles ------------------------------------------------
+        active_channels: List[tuple[str, int]] = []
+        for label, path in MONITOR_VARS:
+            try:
+                handle = scope.get_variable(path)
+                var_handles[label] = handle
+                active_channels.append((label, handle))
+            except Exception as exc:  # pragma: no cover - hardware dependent
+                print(f"Warning: cannot resolve {path}: {exc}")
+                var_handles[label] = None
+
+        for key, path in CONTROL_VARS.items():
+            try:
+                var_handles[key] = scope.get_variable(path)
+            except Exception as exc:  # pragma: no cover - hardware dependent
+                print(f"Warning: cannot resolve {path}: {exc}")
+                var_handles[key] = None
+
+        # Initial writes ---------------------------------------------------------
+        hw = var_handles.get("hardware_ui")
+        if hw is not None:
+            try:
+                scope.write(hw, 0)
+            except Exception as exc:
+                print(f"Warning: failed to write hardwareUiEnabled=0: {exc}")
+
+        vel = var_handles.get("velocity_ref")
+        if vel is not None:
+            try:
+                scope.write(vel, int(counts))
+            except Exception as exc:
+                print(f"Warning: failed to write velocityReference: {exc}")
+
+        # Scope setup ------------------------------------------------------------
+        if hasattr(scope, "clear_scope_channels"):
+            scope.clear_scope_channels()
+        for label, handle in active_channels:
+            scope.add_scope_channel(handle)
+
+        scope.set_sample_time(1)
+        scope.request_scope_data()
+
+        time.sleep(0.5)
+
+        # Run motor --------------------------------------------------------------
+        run_var = var_handles.get("run_req")
+        if run_var is not None:
+            scope.write(run_var, 1)
+            run_sent = True
+
+        start = time.time()
+        data: Dict[str, List[float]] = {lbl: [] for lbl, _ in active_channels}
+
+        while time.time() - start < 10.0:
+            if scope.is_scope_data_ready():
+                chunk = scope.get_scope_channel_data(valid_data=False)
+                for idx, (lbl, _) in enumerate(active_channels):
+                    if idx in chunk:
+                        data[lbl].extend(chunk[idx])
+                scope.request_scope_data()
+            time.sleep(0.05)
+
+        # Stop motor -------------------------------------------------------------
+        stop_var = var_handles.get("stop_req")
+        if stop_var is not None:
+            scope.write(stop_var, 1)
+            stop_sent = True
+
+        time.sleep(0.5)
+        if scope.is_scope_data_ready():
+            chunk = scope.get_scope_channel_data(valid_data=False)
+            for idx, (lbl, _) in enumerate(active_channels):
+                if idx in chunk:
+                    data[lbl].extend(chunk[idx])
+
+        # Build time axis --------------------------------------------------------
+        n_samples = min(len(v) for v in data.values()) if data else 0
+        ts_us = 0
+        try:
+            ts_us = scope.get_scope_sample_time()
+        except Exception:
+            pass
+        if ts_us and ts_us > 0:
+            ts_s = ts_us / 1_000_000.0
+        else:
+            ts_s = 10.0 / n_samples if n_samples else 0.0
+            print("Warning: scope sample time unavailable; estimating from run duration.")
+        fs = 1.0 / ts_s if ts_s else 0.0
+        t_axis = [i * ts_s for i in range(n_samples)]
+
+        # Save CSV ---------------------------------------------------------------
+        csv_path = Path("scope_data.csv")
+        with csv_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            header = ["t_s"] + [lbl for lbl, _ in active_channels]
+            writer.writerow(header)
+            for i in range(n_samples):
+                row = [t_axis[i]] + [data[lbl][i] for lbl, _ in active_channels]
+                writer.writerow(row)
+
+        print(f"Captured {n_samples} samples per channel.")
+        print(f"Estimated sample time {ts_s:.6f} s ({fs:.1f} Hz).")
+        print(f"CSV saved to {csv_path.resolve()}")
+
+        # Optional plot ---------------------------------------------------------
+        if plt and n_samples:
+            fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+            if "idqCmd_q" in data:
+                ax1.plot(t_axis, data["idqCmd_q"], label="idqCmd_q")
+            if "Idq_q" in data:
+                ax1.plot(t_axis, data["Idq_q"], label="Idq_q")
+            if "Idq_d" in data:
+                ax1.plot(t_axis, data["Idq_d"], label="Idq_d")
+            ax1.set_ylabel("Currents")
+            ax1.legend()
+
+            if "OmegaElectrical" in data:
+                ax2.plot(t_axis, data["OmegaElectrical"], label="OmegaElectrical")
+            if "OmegaCmd" in data:
+                ax2.plot(t_axis, data["OmegaCmd"], label="OmegaCmd")
+            ax2.set_ylabel("Omega")
+            ax2.set_xlabel("Time [s]")
+            ax2.legend()
+            plt.show()
+
+    except KeyboardInterrupt:
+        print("Interrupted by user.")
+    except Exception as exc:
+        print(f"Error: {exc}")
+    finally:
+        if scope is not None:
+            if run_sent and not stop_sent:
+                stop_var = var_handles.get("stop_req")
+                if stop_var is not None:
+                    try:
+                        scope.write(stop_var, 1)
+                        print("Motor stop requested due to early exit.")
+                    except Exception:
+                        pass
+            scope.close()
 
 
 if __name__ == "__main__":
     main()
-
