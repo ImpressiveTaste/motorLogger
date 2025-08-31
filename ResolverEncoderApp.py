@@ -73,7 +73,11 @@ class _ScopeWrapper:
             self._scope.clear_scope_channels()
         for var in vars:
             self._scope.add_scope_channel(var)
-        self._scope.set_sample_time(sample_ms)
+        # Convert desired interval (ms) to prescaler using 50 µs base period
+        base_us = 50.0
+        desired_us = max(int(sample_ms), 1) * 1000
+        prescaler = max(int(round(desired_us / base_us)) - 1, 0)
+        self._scope.set_sample_time(prescaler)
         self._scope.request_scope_data()
 
     def scope_ready(self) -> bool:
@@ -82,7 +86,7 @@ class _ScopeWrapper:
     def get_scope_data(self):
         if not USE_SCOPE or not self._scope:
             return {}
-        return self._scope.get_scope_channel_data(valid_data=False)
+        return self._scope.get_scope_channel_data(valid_data=True)
 
     def request_scope_data(self):
         if USE_SCOPE and self._scope:
@@ -334,7 +338,7 @@ class ResolverEncoderGUI:
                             if key is None:
                                 continue
                             self.data[key].extend(vals)
-                time.sleep(self.ts / 10)
+                time.sleep(0.25)
         finally:
             try:
                 if self.root.winfo_exists():

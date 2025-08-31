@@ -187,9 +187,9 @@ class RealScopeBackend(ScopeBackend):
                 self.scope.add_scope_channel(var)
                 self.scope.set_sample_time(1)
                 self.scope.request_scope_data()
-                time.sleep(0.05)
+                time.sleep(0.25)
                 while not self.scope.is_scope_data_ready():
-                    time.sleep(0.01)
+                    time.sleep(0.25)
                 data = self.scope.get_scope_channel_data(valid_data=True)
                 samples = len(next(iter(data.values())))
                 bytes_per_sample = self.channel_widths[0]
@@ -547,14 +547,14 @@ class MotorLoggerGUI(QWidget):
         motor_on = self.motor_on_spin.value()
         if motor_on > 0:
             QTimer.singleShot(int(motor_on*1000), lambda: self.backend.write_var("motor.enable", 0))
-        QTimer.singleShot(int(duration*1000)+100, self.poll_ready)
+        QTimer.singleShot(0, self.poll_ready)
         self.status.showMessage("Capture in progress...")
 
     def poll_ready(self) -> None:
         if self.backend.is_scope_ready():
             self.finish_capture()
         else:
-            QTimer.singleShot(100, self.poll_ready)
+            QTimer.singleShot(250, self.poll_ready)
 
     def finish_capture(self) -> None:
         data = self.backend.get_data()
