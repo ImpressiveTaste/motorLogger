@@ -1,142 +1,105 @@
-# pyX2Cscope Motor Logger GUI
+# Motor Logger GUI (PyQt6)
 
-**Last updated:** July 2, 2025
-
-This project provides a Python GUI built with `tkinter` that interfaces with [pyX2Cscope](https://github.com/X2Cscope/pyx2cscope). It can connect to a Microchip MCAF target, start or stop the motor and log multiple variables with optional per‑channel scaling.
-
-![Updated GUI](https://github.com/ImpressiveTaste/motorLogger/blob/main/UPDATEDGUI.png)
-
-![Old GUI](https://github.com/ImpressiveTaste/motorLogger/blob/main/GUI.png)
-
-
-## Features
-
-- Connects to MCAF-compatible targets using a selected COM port and ELF file
-- Start/stop control with a user defined target speed
-- Live display of measured and commanded speed
-- Logs the following variables for a specified duration:
-  - `motor.idqCmd.q`
-  - `motor.idq.q`
-  - `motor.idq.d`
-  - `motor.omegaElectrical`
-  - `motor.omegaCmd`
-- Enter a scaling factor for each variable so plots and saved data are scaled on the fly
-- Plot currents and speed, or save to Excel, CSV or MATLAB format
-- Dummy mode available by setting `USE_SCOPE = False`
-- Experimental button to disable the sample interval guard
+This project provides a single-file Python application `motor_logger_gui.py` for logging motor control variables via [pyX2Cscope](https://github.com/X2Cscope/pyx2cscope).  It offers a modern PyQt6 interface, a demo mode that generates synthetic data, and live feasibility checks to help you choose safe logging settings.
 
 ## Requirements
 
 - Python 3.11+
-- [pyX2Cscope](https://pypi.org/project/pyx2cscope/)
-- Optional: `matplotlib`, `pandas`, and `scipy` for plotting and saving
-- Windows if you want to build a `.exe`
+- [PyQt6](https://pypi.org/project/PyQt6/), [numpy](https://pypi.org/project/numpy/), [matplotlib](https://pypi.org/project/matplotlib/)
+- Optional: [pyX2Cscope](https://pypi.org/project/pyx2cscope/) and `mchplnet` for hardware mode
 
-## Setup
+## Running
 
-1. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-2. Install the required package:
-   ```bash
-   pip install pyx2cscope
-   ```
-3. (Optional) Verify the tool:
-   ```bash
-   pyx2cscope
-   ```
-4. Run the GUI:
-   ```bash
-   python MotorLogger.py
-   ```
-
-Detailed documentation is available at https://x2cscope.github.io/pyx2cscope/
-
-## Usage
-
-1. Select an ELF file and COM port.
-2. Set:
-   - Target speed (RPM)
-   - Scale (RPM/count)
-   - Logging time (seconds)
-   - Sample interval (ms)
-    - Logging now uses X2Cscope scope channels. All selected variables can be
-      sampled at **1 ms** intervals. The GUI enforces a 1 ms minimum by default,
-      but you can disable this using the experimental button to try faster
-      rates.
-3. Click **START** to capture data. Press **STOP** to end the capture early.
-4. Use the buttons to plot currents, plot speed, or save the captured data.
-
-### Sample timing
-
-The logger configures X2Cscope's sampling interval using a prescaler based on
-the MCU's base time.  Some devices use a base time other than the default
-50 µs, which means the **actual** sample interval can differ from the
-user‑requested value.  The tool now checks the real interval reported by
-X2Cscope and computes the expected sample count from this value so the
-validation step is accurate.  If you have a data‑model dump that lists the
-timer base, you can set `scope.base_us_override` accordingly for precise timing.
-
-## How to Determine RPM/Count Scaling
-
-Refer to the MotorBench report located at:
-```
-<YourProject>.X/mcc_generated_files/motorBench/aux-files/report.html
-```
-An example value is `0.19913 RPM/ct`. Copy this into the Scale field.
-
-## Making a Standalone .exe (Optional)
-
-1. Install the tool:
-   ```bash
-   pip install auto-py-to-exe
-   ```
-2. Launch it:
-   ```bash
-   auto-py-to-exe
-   ```
-3. Select `MotorLogger.py`, one-file mode, and build the project.
-
-## References
-
-- [pyX2Cscope on GitHub](https://github.com/X2Cscope/pyx2cscope)
-- [pyX2Cscope on PyPI](https://pypi.org/project/pyx2cscope/)
-- [X2Cscope documentation](https://x2cscope.github.io/)
-- [auto-py-to-exe on PyPI](https://pypi.org/project/auto-py-to-exe/)
-
-## Notes
-
-The logger uses the following scope variables:
-
-- `motor.apiData.velocityReference`
-- `motor.apiData.velocityMeasured`
-- `motor.apiData.runMotorRequest`
-- `motor.apiData.stopMotorRequest`
-- `app.hardwareUiEnabled`
-
-Set `USE_SCOPE = False` to run the GUI without hardware.
-
-### UPDATES
-
-- Fixed multi-channel capture when using newer `pyX2Cscope` releases.
-- Fixed irregular time axis in captured data.
-- Added experimental button to remove the sample interval safeguard.
-- Scope capture now uses X2Cscope channels allowing 1 ms sampling for up to six
-  variables.
-- Sample guard updated: minimum sample interval is 1 ms for all variables.
-
-
-## Resolver to Encoder Test App
-
-The repository also includes **ResolverEncoderApp.py**, a simplified GUI for logging resolver variables. It derives from the Motor Logger code and can be used to verify resolver functionality or capture data for calibration. The tool connects via `pyX2Cscope`, logs the raw and converted angles, and provides a one-click calibration request. Logged data can be saved as CSV for further analysis.
-The GUI now also includes a *View Cal Values* button that opens a small window
-listing the calibration variables read from the target so you can reprogram the
-MCU with the correct values.
-The window lists global variables like `resolver.offset` and `resolver.status` from the MCU firmware.
-
-Run it with:
 ```bash
-python ResolverEncoderApp.py
+python motor_logger_gui.py
 ```
+
+If `pyX2Cscope` is missing the app starts in **Demo** mode and synthesises data.  When the library is available, click **Connect** and the tool attempts to talk to the hardware.
+
+## Why `set_sample_time(f)` Controls the Rate
+
+X2Cscope is updated inside the fixed 20 kHz PWM loop.  Calling `X2CScope.set_sample_time(f)` tells the MCU to log every `f`‑th PWM sample:
+
+- `f = 1` → 20 kHz effective logging rate
+- `f = 2` → 10 kHz
+- `f = n` → `20_000 / n` Hz
+
+The firmware side remains untouched—the ISR still runs at 20 kHz—so timing is deterministic while you trade off resolution for duration.
+
+## Feasibility Math
+
+Let
+
+- `V` – number of variables
+- `Bv` – bytes per variable (2 or 4)
+- `f` – sample‑time factor
+- `Fs = 20_000 / f` – effective sample rate
+- `baud` – UART baud rate
+
+Per‑second payload (ignoring protocol overhead):
+
+```
+Bytes_per_sec = V * Bv * Fs = V * Bv * 20_000 / f
+```
+
+UART capacity (8N1 framing ≈ 10 bits/byte):
+
+```
+Bytes_per_sec_UART = baud / 10
+```
+
+The GUI shows a colour badge:
+
+- **Red** if `Bytes_per_sec` > `0.7 × Bytes_per_sec_UART`
+- **Amber** if 0.4–0.7×
+- **Green** otherwise
+
+Estimated buffer time (if the device buffer size `SDA_bytes` is known or probed):
+
+```
+Bytes_per_sample = V * Bv
+Buffer_time ≈ SDA_bytes / (Bytes_per_sample * Fs)
+```
+
+Total capture size:
+
+```
+Total_bytes ≈ V * Bv * Fs * duration
+```
+
+The **Reasons & Risks** panel explains these numbers whenever you change the sample factor, duration or baud rate.
+
+## Ballpark Table (V=5, Bv=2)
+
+| Baud (bps) | f needed for Green | Approx. Fs (Hz) |
+|-----------:|-------------------:|---------------:|
+| 115 200    | ≥18                | ≈1.11 kHz      |
+| 230 400    | ≥9                 | ≈2.22 kHz      |
+| 921 600    | ≥3                 | ≈6.67 kHz      |
+
+## Estimating Buffer Size
+
+Some devices report their internal Scope Data Array size.  If not, press **Probe Buffer**:
+
+1. The app arms a minimal channel list and performs a short capture.
+2. The number of samples returned infers the buffer size.
+3. The estimate (±20 %) is shown in the feasibility panel.
+
+## Known Limits
+
+- UART framing and protocol overhead reduce the effective throughput; staying in the green zone is recommended.
+- CSV files larger than ~25 MB may be slow to save or open.
+- Demo mode produces synthetic sine‑plus‑noise signals for quick testing.
+
+## Capture Flow
+
+1. Choose variables and byte widths.
+2. Enter capture duration and either a desired sample rate or the down‑sample factor `f`.
+3. Review the feasibility panel and adjust settings if badges turn red or amber.
+4. Press **Start Capture**.  The GUI writes `motor.enable = 1`, captures data and writes `0` after the configured motor‑on time.
+5. When finished, plots appear on the **Results** tab where you can export to CSV and copy a summary.
+
+## License
+
+MIT
+
