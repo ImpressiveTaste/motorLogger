@@ -518,9 +518,9 @@ class MotorLoggerGUI:
                 )
             else:
                 self.scope_dt = self.ts
-            # Expected sample count based on the user-requested interval
-            # (scope_dt may differ slightly due to hardware quantisation)
-            self.expected_samples = int(round(target_total / self.ts))
+            # Expected sample count using the actual scope interval
+            # (scope_dt may differ slightly from the user request)
+            self.expected_samples = int(round(target_total / self.scope_dt))
             if abs(self.scope_dt - self.ts) > (self.ts * 0.05):
                 self.scope_issue = (
                     f"Sample time differs: requested {self.ts*1e3:.3f} ms, "
