@@ -346,11 +346,11 @@ if __name__ == '__main__':
 
     # Storing the data and plotting it
     x2c_scope.request_scope_data()
-    time.sleep(0.1)
+    time.sleep(0.25)
     data_storage = {}
     try:
         while not x2c_scope.is_scope_data_ready():
-            time.sleep(0.5)
+            time.sleep(0.25)
     except KeyboardInterrupt:
         pass
 
@@ -425,11 +425,11 @@ if __name__ == '__main__':
 
             # Storing the data and plotting
             x2c_scope.request_scope_data()
-            time.sleep(0.1)
+            time.sleep(0.25)
             data_storage = {} 
             try:
                 while not x2c_scope.is_scope_data_ready():
-                    time.sleep(0.5)
+                    time.sleep(0.25)
             except KeyboardInterrupt:
                 pass
 

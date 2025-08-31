@@ -594,7 +594,7 @@ class MotorLoggerGUI:
 
                         sample_idx += n
 
-                time.sleep(self.ts / 10)
+                time.sleep(0.25)
 
             self.actual_samples = sample_idx
 

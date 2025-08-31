@@ -459,7 +459,7 @@ class MotorLoggerGUI:
                             self.data[key].extend(v * scale for v in vals)
 
 
-                time.sleep(self.ts / 10)
+                time.sleep(0.25)
         finally:
             try:
                 if self.root.winfo_exists():
