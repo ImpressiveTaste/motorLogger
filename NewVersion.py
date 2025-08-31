@@ -170,6 +170,9 @@ class MotorLoggerGUI:
         self.scale_factors = {k: 1.0 for k in VAR_PATHS}  # per-channel scaling
         self.selected_vars = list(VAR_PATHS)
         self.enforce_limit = DEFAULT_ENFORCE_SAMPLE_LIMIT
+        self.scope_issue: str | None = None
+        self.expected_samples: int = 0
+        self.actual_samples: int = 0
 
         self._build_widgets()
         self.scope_dt = self.DEFAULT_DT / 1000.0  # seconds, default until prepare_scope runs
@@ -395,6 +398,9 @@ class MotorLoggerGUI:
         self.data["MotorRunning"] = []
         self._stop_flag.clear()
         self.ts = dt_ms / 1000.0
+        self.scope_issue = None
+        self.expected_samples = 0
+        self.actual_samples = 0
 
         # Command speed in counts using GUI scale (for consistency)
         self.cmd_var.set_value(int(round(rpm/scale)))
@@ -442,6 +448,12 @@ class MotorLoggerGUI:
                 )
             else:
                 self.scope_dt = self.ts
+            self.expected_samples = int(round(target_total / self.scope_dt))
+            if abs(self.scope_dt - self.ts) > (self.ts * 0.05):
+                self.scope_issue = (
+                    f"Sample time differs: requested {self.ts*1e3:.3f} ms, "
+                    f"got {self.scope_dt*1e3:.3f} ms"
+                )
 
             sample_idx = 0
             run_set = False
@@ -473,7 +485,18 @@ class MotorLoggerGUI:
                     self.scope.request_scope_data()  # queue next frame
 
                     if chans:
+                        retrieved_keys = {PATH_TO_KEY.get(str(ch)) for ch in chans.keys()}
+                        expected_keys = set(self.selected_vars)
+                        if retrieved_keys != expected_keys and self.scope_issue is None:
+                            self.scope_issue = (
+                                "Scope channels mismatch: "
+                                f"expected {sorted(expected_keys)}, got {sorted(k for k in retrieved_keys if k)}"
+                            )
+
                         n = len(next(iter(chans.values())))  # all lists are equal
+                        if any(len(vals) != n for vals in chans.values()) and self.scope_issue is None:
+                            self.scope_issue = "Unequal sample counts across channels"
+
                         dt = getattr(self, "scope_dt", self.ts)
 
                         # time vector
@@ -500,6 +523,8 @@ class MotorLoggerGUI:
                         sample_idx += n
 
                 time.sleep(self.ts / 10)
+
+            self.actual_samples = sample_idx
 
             # Optionally deassert RUN at the very end
             try:
@@ -538,6 +563,17 @@ class MotorLoggerGUI:
                 self.omega_btn.config(state="disabled")
 
             self.save_btn.config(state="normal")
+            if self.actual_samples and self.expected_samples and self.actual_samples != self.expected_samples:
+                msg = (
+                    f"Expected {self.expected_samples} samples, "
+                    f"got {self.actual_samples}"
+                )
+                if self.scope_issue:
+                    self.scope_issue += "; " + msg
+                else:
+                    self.scope_issue = msg
+            if self.scope_issue:
+                messagebox.showwarning("Scope", self.scope_issue)
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
