@@ -89,9 +89,12 @@ def parse_args() -> argparse.Namespace:
 
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    args = parse_args()
-    counts = args.speed / args.scale
+def run_motor_logger(elf: str, port: str, baud: int, speed: float, scale: float) -> None:
+    """Run the logger with provided settings.
+
+    This is the core routine used by both the CLI and the Tkinter GUI.
+    """
+    counts = speed / scale
 
     scope: Optional[X2CScope] = None
     run_sent = False
@@ -99,9 +102,9 @@ def main() -> None:
     var_handles: Dict[str, Optional[int]] = {}
 
     try:
-        scope = X2CScope(port=args.port, baudrate=args.baud, elf_file=args.elf)
+        scope = X2CScope(port=port, baudrate=baud, elf_file=elf)
         try:  # Older versions require explicit import
-            scope.import_variables(args.elf)
+            scope.import_variables(elf)
         except Exception:
             pass
 
@@ -245,6 +248,11 @@ def main() -> None:
                     except Exception:
                         pass
             scope.close()
+
+
+def main() -> None:
+    args = parse_args()
+    run_motor_logger(args.elf, args.port, args.baud, args.speed, args.scale)
 
 
 if __name__ == "__main__":
