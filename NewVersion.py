@@ -489,7 +489,7 @@ class MotorLoggerGUI:
     def _worker(self, dur: float):
         """Background capture."""
         PRE_START = 1.0  # capture before sending run command [s]
-        POST_STOP = 1.0  # capture after stop command [s]
+        POST_STOP = 1.5  # capture after stop command [s]
 
         try:
             self.status.set("Running + logging…")
@@ -518,7 +518,9 @@ class MotorLoggerGUI:
                 )
             else:
                 self.scope_dt = self.ts
-            self.expected_samples = int(round(target_total / self.scope_dt))
+            # Expected sample count based on the user-requested interval
+            # (scope_dt may differ slightly due to hardware quantisation)
+            self.expected_samples = int(round(target_total / self.ts))
             if abs(self.scope_dt - self.ts) > (self.ts * 0.05):
                 self.scope_issue = (
                     f"Sample time differs: requested {self.ts*1e3:.3f} ms, "
@@ -668,24 +670,19 @@ class MotorLoggerGUI:
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
         plotted = False
         for k, lbl in (
             ("idqCmd_q", "idqCmd.q [A]"),
             ("Idq_q",    "idq.q [A]"),
             ("Idq_d",    "idq.d [A]"),
         ):
-            if (
-                k in self.data
-                and self.data[k]
-                and len(self.data[k]) == len(t)
-            ):
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data and self.data[k]:
+                ax.plot(range(len(self.data[k])), self.data[k], label=lbl, linewidth=0.9)
                 plotted = True
 
         if not plotted:
             messagebox.showinfo("Plot", "No valid current data to plot."); return
-        ax.set_xlabel("Time [s]")
+        ax.set_xlabel("Sample #")
         ax.set_ylabel("Current [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
         ax.legend(fontsize="small")
@@ -699,23 +696,18 @@ class MotorLoggerGUI:
         if plt is None:
             messagebox.showerror("Plot", "Install matplotlib"); return
         fig, ax = plt.subplots(figsize=(8, 4))
-        t = self.data["t"]
         plotted = False
         for k, lbl in (
             ("OmegaElectrical", "omegaElectrical [scaled]"),
             ("OmegaCmd",        "omegaCmd [scaled]"),
         ):
-            if (
-                k in self.data
-                and self.data[k]
-                and len(self.data[k]) == len(t)
-            ):
-                ax.plot(t, self.data[k], label=lbl, linewidth=0.9)
+            if k in self.data and self.data[k]:
+                ax.plot(range(len(self.data[k])), self.data[k], label=lbl, linewidth=0.9)
                 plotted = True
 
         if not plotted:
             messagebox.showinfo("Plot", "No valid omega data to plot."); return
-        ax.set_xlabel("Time [s]")
+        ax.set_xlabel("Sample #")
         ax.set_ylabel("Speed [scaled]")
         ax.grid(True, linestyle=":", linewidth=0.5)
         ax.legend(fontsize="small")
