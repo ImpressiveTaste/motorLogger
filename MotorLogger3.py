@@ -120,7 +120,9 @@ class _ScopeWrapper:
     def prepare_scope(self, vars: List[object], sample_ms: int):
         """Configure scope channels and sampling interval.
 
-        Returns (prescaler, base_us) so caller can compute the true dt."""
+        Returns the actual sample period in microseconds as reported by
+        ``get_scope_sample_time``.  ``None`` is returned if the scope is not
+        active."""
         if not USE_SCOPE or self._scope is None:
             return None
         # pyX2Cscope renamed the clearing helper across releases; try a few.
@@ -142,7 +144,14 @@ class _ScopeWrapper:
         self._scope.set_sample_time(prescaler)
         self._scope.request_scope_data()
 
-        return prescaler, base_us
+        # Ask firmware for the real sample time.  Fall back to a manual
+        # calculation if the helper is unavailable.
+        try:
+            ts_us = float(self._scope.get_scope_sample_time())
+        except Exception:  # pragma: no cover - depends on hw
+            ts_us = (prescaler + 1) * base_us
+
+        return ts_us
 
     def scope_ready(self) -> bool:
         if not USE_SCOPE or self._scope is None:
@@ -411,9 +420,12 @@ class MotorLoggerGUI:
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
             res = self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
             if res:
-                prescaler, base_us = res
-                # convert prescaler back to seconds for our time vector
-                self.ts = (prescaler + 1) * base_us / 1_000_000.0
+                # convert microseconds to seconds for our time vector
+                self.ts = res / 1_000_000.0
+                fs = 1.0 / self.ts
+                self.status.set(
+                    f"Running + logging… (Ts={self.ts*1000:.2f} ms, Fs={fs:.1f} Hz)"
+                )
 
             total_window = PRE_START + dur + POST_STOP
             self.expected_samples = int(total_window / self.ts)
