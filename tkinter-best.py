@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pyX2Cscope motor logger GUI — hardware-only, with robust RUN/STOP and ms+kHz displays
+pyX2Cscope motor logger GUI — hardware-only, with one-shot RUN/STOP and ms+kHz displays
 Reverted connection flow to X2CScope(port=...) + import_variables(elf)
 
 • Serial port dropdown + Refresh (pyserial)
@@ -11,7 +11,7 @@ Reverted connection flow to X2CScope(port=...) + import_variables(elf)
 • “Ready double-check” after first ready=True before reading
 • Read-time sanity check vs UART capacity estimate
 • Per-channel scaling and RUN/STOP/velocity preserved
-• RUN/STOP sends are hardened: baseline, timed asserts, periodic reassert, clean deassert
+• RUN/STOP uses one-shot writes: runMotorRequest=1 at start, stopMotorRequest=1 at stop
 
 Tested with: Python 3.11, pyX2Cscope ≥0.4.x, Windows 10/11
 """
@@ -551,11 +551,6 @@ class MotorLoggerGUI:
 
     def _disconnect(self):
         self._stop_capture()
-        try:
-            if hasattr(self, "run_var"):  self._write_var_safe(self.run_var, 0)
-            if hasattr(self, "stop_var"): self._write_var_safe(self.stop_var, 0)
-        except Exception:
-            pass
         self.scope.disconnect()
         self.connected = False
         for b in (self.start_btn, self.stop_btn, self.curr_btn, self.omega_btn, self.save_btn):
@@ -616,15 +611,14 @@ class MotorLoggerGUI:
 
     def _stop_capture(self):
         self._stop_flag.set()
-        # assert STOP=1, RUN=0 to be safe (robust)
-        try:
-            self._write_var_safe(self.stop_var, 1, repeats=2)
-            self._write_var_safe(self.run_var, 0, repeats=2)
-        except Exception:
-            pass
+        if self._cap_thread and self._cap_thread.is_alive():
+            try:
+                self._write_var_safe(self.stop_var, 1, repeats=1)
+            except Exception:
+                pass
 
     def _capture_worker(self, duration_s: float, f: int):
-        """Single-shot capture with robust RUN/STOP, double-check ready, and read-time sanity."""
+        """Single-shot capture with one-shot RUN/STOP, double-check ready, and read-time sanity."""
         try:
             # Configure channels and sample factor
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
@@ -634,19 +628,10 @@ class MotorLoggerGUI:
             self.Fs_actual = Fs
             self.Ts_ms = 1000.0 / Fs
 
-            # Clean baseline: RUN=0, STOP=0 (twice with a short pause)
-            try:
-                self._write_var_safe(self.run_var, 0, repeats=2)
-                self._write_var_safe(self.stop_var, 0, repeats=2)
-                time.sleep(0.02)
-            except Exception:
-                pass
-
             # Timeline
             t0 = time.perf_counter()
             run_time  = t0 + self.PRE_START
             stop_time = run_time + duration_s
-            end_time  = stop_time + self.POST_STOP
 
             # Start MCU capture now
             self.scope.request()
@@ -654,8 +639,6 @@ class MotorLoggerGUI:
             # Control window
             run_set = False
             stop_set = False
-            last_run_refresh = 0.0
-            run_refresh_period = 0.2  # re-assert RUN=1 every 200 ms during the window
 
             # Wait for ready with double-check confirmations
             confirm_needed = 3
@@ -665,29 +648,18 @@ class MotorLoggerGUI:
             while not self._stop_flag.is_set():
                 now = time.perf_counter()
 
-                # Assert RUN at run_time, and keep it refreshed
+                # Assert RUN at run_time
                 if not run_set and now >= run_time:
                     try:
-                        self._write_var_safe(self.run_var, 1, repeats=2)
-                        run_set = True
-                        last_run_refresh = now
-                    except Exception:
-                        pass
-                if run_set and not stop_set and (now - last_run_refresh) >= run_refresh_period:
-                    # periodic reassert to be extra safe
-                    try:
                         self._write_var_safe(self.run_var, 1, repeats=1)
+                        run_set = True
                     except Exception:
                         pass
-                    last_run_refresh = now
 
-                # Assert STOP at stop_time, then drop RUN shortly after
+                # Assert STOP at stop_time
                 if not stop_set and now >= stop_time:
                     try:
-                        self._write_var_safe(self.stop_var, 1, repeats=2)
-                        # small gap then drop RUN to 0
-                        time.sleep(0.01)
-                        self._write_var_safe(self.run_var, 0, repeats=2)
+                        self._write_var_safe(self.stop_var, 1, repeats=1)
                         stop_set = True
                     except Exception:
                         pass
@@ -707,14 +679,6 @@ class MotorLoggerGUI:
                     break
 
                 time.sleep(0.01)
-
-            # End-of-window cleanup: ensure RUN=0, STOP=1 remains high until finish
-            try:
-                self._write_var_safe(self.run_var, 0, repeats=2)
-                if stop_set:
-                    self._write_var_safe(self.stop_var, 1, repeats=1)
-            except Exception:
-                pass
 
             # Estimate expected bytes/time for sanity
             Bv_list = [self.bytes_per_var.get(k, 2) for k in self.selected_vars]
@@ -765,12 +729,6 @@ class MotorLoggerGUI:
         except Exception as e:
             self.issue_text = f"Capture error: {e}"
         finally:
-            # Always deassert both at the very end (best-effort)
-            try:
-                self._write_var_safe(self.run_var, 0, repeats=2)
-                self._write_var_safe(self.stop_var, 0, repeats=2)
-            except Exception:
-                pass
             try:
                 if self.root.winfo_exists():
                     self.root.after(0, self._worker_done)
@@ -880,14 +838,9 @@ class MotorLoggerGUI:
     # ---------- Cleanup ----------
     def _on_close(self):
         try:
-            self._stop_flag.set()
+            self._stop_capture()
             if self._cap_thread and self._cap_thread.is_alive():
                 self._cap_thread.join(timeout=2)
-            try:
-                if hasattr(self, "run_var"):  self._write_var_safe(self.run_var, 0, repeats=2)
-                if hasattr(self, "stop_var"): self._write_var_safe(self.stop_var, 0, repeats=2)
-            except Exception:
-                pass
             self.scope.disconnect()
         finally:
             try:
