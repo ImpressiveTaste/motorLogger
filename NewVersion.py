@@ -140,13 +140,19 @@ class _ScopeWrapper:
     def scope_ready(self) -> bool:
         if not USE_SCOPE or self._scope is None:
             return False
-        return bool(self._scope.is_scope_data_ready())
+        try:
+            return bool(self._scope.is_scope_data_ready())
+        except Exception:
+            return False
 
     def get_scope_data(self):
         if not USE_SCOPE or self._scope is None:
             return {}
         # Only return valid, aligned frames
-        return self._scope.get_scope_channel_data(valid_data=True)
+        try:
+            return self._scope.get_scope_channel_data(valid_data=True)
+        except Exception:
+            return {}
 
     def request_scope_data(self):
         if USE_SCOPE and self._scope:
@@ -453,6 +459,13 @@ class MotorLoggerGUI:
         self.validity_label.config(text="Capturing…", bg="gray")
         self.issue_var.set("")
 
+        # Ensure control lines are in a known state
+        try:
+            self.run_var.set_value(0)
+            self.stop_var.set_value(0)
+        except Exception:
+            pass
+
         # Command speed in counts using GUI scale (for consistency)
         self.cmd_var.set_value(int(round(rpm/scale)))
 
@@ -465,7 +478,13 @@ class MotorLoggerGUI:
         for w in self._lock_widgets:
             w.config(state="disabled")
 
-    def _stop_capture(self): self._stop_flag.set()
+    def _stop_capture(self):
+        self._stop_flag.set()
+        try:
+            self.run_var.set_value(0)
+            self.stop_var.set_value(1)
+        except Exception:
+            pass
 
     def _worker(self, dur: float):
         """Background capture."""
@@ -577,10 +596,11 @@ class MotorLoggerGUI:
 
             self.actual_samples = sample_idx
 
-            # Optionally deassert RUN at the very end
+            # Optionally deassert RUN/STOP at the very end
             try:
                 if run_set:
                     self.run_var.set_value(0)
+                self.stop_var.set_value(0)
             except Exception:
                 pass
 
