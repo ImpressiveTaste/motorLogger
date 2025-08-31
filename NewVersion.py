@@ -227,16 +227,55 @@ class MotorLoggerGUI:
         ttk.Button(parms, text="?", width=2, command=self._show_sample_info).grid(row=3, column=3, padx=(2,0))
 
         # Buttons
-        btn = ttk.Frame(main); btn.pack(pady=(6, 2))
-        self.start_btn = ttk.Button(btn, text="START ▶", width=12, command=self._start_capture, state="disabled"); self.start_btn.pack(side="left", padx=2)
-        self.stop_btn  = ttk.Button(btn, text="STOP ■",  width=12, command=self._stop_capture,  state="disabled"); self.stop_btn.pack(side="left", padx=2)
-        self.curr_btn  = ttk.Button(btn, text="Currents", width=10, command=self._plot_currents, state="disabled"); self.curr_btn.pack(side="left", padx=2)
-        self.omega_btn = ttk.Button(btn, text="Omega",    width=10, command=self._plot_omega,    state="disabled"); self.omega_btn.pack(side="left", padx=2)
-        self.save_btn  = ttk.Button(btn, text="Save…",    width=8,  command=self._save,          state="disabled"); self.save_btn.pack(side="left", padx=2)
+        btn = ttk.Frame(main)
+        btn.pack(pady=(6, 2))
+        self.start_btn = ttk.Button(
+            btn, text="START ▶", width=12, command=self._start_capture, state="disabled"
+        )
+        self.start_btn.pack(side="left", padx=2)
+        self.stop_btn = ttk.Button(
+            btn, text="STOP ■", width=12, command=self._stop_capture, state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=2)
+        self.curr_btn = ttk.Button(
+            btn, text="Currents", width=10, command=self._plot_currents, state="disabled"
+        )
+        self.curr_btn.pack(side="left", padx=2)
+        self.omega_btn = ttk.Button(
+            btn, text="Omega", width=10, command=self._plot_omega, state="disabled"
+        )
+        self.omega_btn.pack(side="left", padx=2)
+        self.save_btn = ttk.Button(
+            btn, text="Save…", width=8, command=self._save, state="disabled"
+        )
+        self.save_btn.pack(side="left", padx=2)
 
-        # Status line
+        # Status line and data validity info
+        status_frame = ttk.Frame(main)
+        status_frame.pack(fill="x", pady=(0, 8))
+
         self.status = tk.StringVar(value="Idle – not connected")
-        ttk.Label(main, textvariable=self.status).pack(pady=(0, 8))
+        ttk.Label(status_frame, textvariable=self.status).pack(side="left")
+
+        self.validity_var = tk.StringVar(value="No data")
+        self.validity_label = tk.Label(
+            status_frame,
+            textvariable=self.validity_var,
+            width=12,
+            bg="gray",
+            fg="white",
+            relief="groove",
+        )
+        self.validity_label.pack(side="left", padx=6)
+
+        self.issue_var = tk.StringVar(value="")
+        ttk.Label(status_frame, textvariable=self.issue_var, wraplength=400, foreground="red").pack(
+            side="left", padx=6
+        )
+
+        ttk.Button(status_frame, text="?", width=2, command=self._show_possible_problem).pack(
+            side="right"
+        )
 
         # Per-channel scaling ------------------------------------------------
         ttk.Label(parms, text="Channel Scaling:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
@@ -302,6 +341,16 @@ class MotorLoggerGUI:
             "Sample rate limits",
             "The GUI interval (ms) is converted to the scope prescaler relative to the firmware ISR.\n"
             "Minimum allowed is 1 ms by default. The actual sampling period is shown in the status bar."
+        )
+
+    def _show_possible_problem(self):
+        """Hint at common sampling issues."""
+        messagebox.showinfo(
+            "Possible issue",
+            (
+                "A common problem is that the sampling rate is too fast for the number of "
+                "variables sampled. Try selecting fewer variables or increasing the sampling interval."
+            ),
         )
 
     # ── Connection handling ───────────────────────────────────────────────
@@ -401,6 +450,8 @@ class MotorLoggerGUI:
         self.scope_issue = None
         self.expected_samples = 0
         self.actual_samples = 0
+        self.validity_label.config(text="Capturing…", bg="gray")
+        self.issue_var.set("")
 
         # Command speed in counts using GUI scale (for consistency)
         self.cmd_var.set_value(int(round(rpm/scale)))
@@ -574,9 +625,16 @@ class MotorLoggerGUI:
                     self.scope_issue = msg
             if self.scope_issue:
                 messagebox.showwarning("Scope", self.scope_issue)
+                self.validity_label.config(text="Invalid Data", bg="red")
+                self.issue_var.set(self.scope_issue)
+            else:
+                self.validity_label.config(text="Valid Data", bg="green")
+                self.issue_var.set("No issues detected")
             self.status.set("Capture finished")
         else:
             self.status.set("Stopped / no data")
+            self.validity_label.config(text="Invalid Data", bg="red")
+            self.issue_var.set("No data captured")
 
         for w in self._lock_widgets:
             w.config(state="normal")
