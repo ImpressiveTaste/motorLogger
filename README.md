@@ -69,6 +69,16 @@ Detailed documentation is available at https://x2cscope.github.io/pyx2cscope/
 3. Click **START** to capture data. Press **STOP** to end the capture early.
 4. Use the buttons to plot currents, plot speed, or save the captured data.
 
+### Sample timing
+
+The logger configures X2Cscope's sampling interval using a prescaler based on
+the MCU's base time.  Some devices use a base time other than the default
+50 µs, which means the **actual** sample interval can differ from the
+user‑requested value.  The tool now checks the real interval reported by
+X2Cscope and computes the expected sample count from this value so the
+validation step is accurate.  If you have a data‑model dump that lists the
+timer base, you can set `scope.base_us_override` accordingly for precise timing.
+
 ## How to Determine RPM/Count Scaling
 
 Refer to the MotorBench report located at:
