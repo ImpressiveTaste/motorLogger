@@ -622,6 +622,9 @@ class MotorLoggerGUI:
             self._write_var_safe(self.run_var, 0, repeats=2)
         except Exception:
             pass
+        # Wait briefly for worker to exit so a new capture can start
+        if self._cap_thread and self._cap_thread.is_alive():
+            self._cap_thread.join(timeout=1.0)
 
     def _capture_worker(self, duration_s: float, f: int):
         """Single-shot capture with robust RUN/STOP, double-check ready, and read-time sanity."""
@@ -716,6 +719,11 @@ class MotorLoggerGUI:
             except Exception:
                 pass
 
+            # If capture was stopped by user, bail out before reading
+            if self._stop_flag.is_set():
+                self.issue_text = "Capture stopped by user"
+                return
+
             # Estimate expected bytes/time for sanity
             Bv_list = [self.bytes_per_var.get(k, 2) for k in self.selected_vars]
             bytes_per_sample = sum(Bv_list)
@@ -779,6 +787,7 @@ class MotorLoggerGUI:
 
     def _worker_done(self):
         # Re-enable UI
+        self._cap_thread = None
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
         for w in self._lock_widgets: w.config(state="normal")
 
