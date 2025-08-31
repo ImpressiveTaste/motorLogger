@@ -47,9 +47,15 @@ except ImportError:  # pragma: no cover
     sio = None  # type: ignore
 
 # ─── Switch between real X2CScope and dummy backend ──────────────────────────
+# ``ScopeWatch`` is used to stream buffered samples from the target.  If the
+# library is not available we gracefully fall back to a dummy backend so the
+# GUI can still be launched without hardware.
 USE_SCOPE = True
-if USE_SCOPE:
-    from pyx2cscope.x2cscope import X2CScope
+try:  # pragma: no cover - exercised only when pyx2cscope is present
+    from pyx2cscope.x2cscope import X2CScope, ScopeWatch
+except Exception:  # pylint: disable=broad-except
+    USE_SCOPE = False
+    X2CScope = ScopeWatch = object  # type: ignore
 
 # ─── Sample interval limitations ----------------------------------------------
 # Scope channel logging supports capturing all enabled variables at 1 ms.
@@ -89,6 +95,7 @@ class _ScopeWrapper:
     """Hides real / dummy selection."""
     def __init__(self):
         self._scope: Union[X2CScope, None] = None
+        self._watch: ScopeWatch | None = None
 
     def connect(self, port: str, elf: str):
         if USE_SCOPE:
@@ -106,37 +113,58 @@ class _ScopeWrapper:
         if USE_SCOPE and self._scope:
             self._scope.disconnect()
             self._scope = None
+            self._watch = None
 
     # Scope channel helpers -------------------------------------------------
     def prepare_scope(self, vars: List[object], sample_ms: int):
-        """Configure scope channels and sampling interval."""
+        """Configure ScopeWatch with buffered streaming.
+
+        Using ``ScopeWatch`` ensures the firmware-side circular buffer is used
+        which prevents gaps in the capture even at high sample rates.  The
+        watcher is kept internally and queried by ``scope_ready`` and
+        ``get_scope_data``.
+        """
         if not USE_SCOPE or self._scope is None:
-            return
-        # pyX2Cscope renamed this helper in newer releases
-        if hasattr(self._scope, "clear_scope_channels"):
-            self._scope.clear_scope_channels()
-        elif hasattr(self._scope, "clear_all_scope_channel"):
-            self._scope.clear_all_scope_channel()
-        elif hasattr(self._scope, "clear_all_scope_channels"):
-            self._scope.clear_all_scope_channels()
-        for idx, var in enumerate(vars):
-            ch = self._scope.add_scope_channel(var)
-        self._scope.set_sample_time(sample_ms)
-        self._scope.request_scope_data()
+            return None
+
+        self._watch = ScopeWatch(
+            self._scope,
+            channels=vars,
+            sample_time=sample_ms,
+            buffer_method=True,
+        )
+        self._watch.start()
+        return self._watch
 
     def scope_ready(self) -> bool:
-        if not USE_SCOPE or self._scope is None:
+        if not USE_SCOPE or self._watch is None:
             return False
-        return bool(self._scope.is_scope_data_ready())
+        return bool(getattr(self._watch, "is_data_ready", lambda: False)())
 
     def get_scope_data(self):
-        if not USE_SCOPE or self._scope is None:
+        if not USE_SCOPE or self._watch is None:
             return {}
-        return self._scope.get_scope_channel_data(valid_data=False)
+        # ``ScopeWatch`` exposes a ``read`` method returning all accumulated
+        # channel data since the last call.
+        if hasattr(self._watch, "read"):
+            return self._watch.read()
+        if hasattr(self._watch, "get_data"):
+            return self._watch.get_data()  # type: ignore[attr-defined]
+        return {}
 
     def request_scope_data(self):
-        if USE_SCOPE and self._scope:
-            self._scope.request_scope_data()
+        # With ``ScopeWatch`` there is no explicit request step – data is
+        # buffered automatically on the target.  This method is kept for
+        # compatibility with the previous polling API.
+        return None
+
+    def stop_watch(self):
+        if USE_SCOPE and self._watch is not None:
+            try:
+                if hasattr(self._watch, "stop"):
+                    self._watch.stop()
+            finally:
+                self._watch = None
 
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
@@ -386,9 +414,12 @@ class MotorLoggerGUI:
             stop_cmd_time = run_cmd_time + dur
             end_time = stop_cmd_time + POST_STOP
 
-            # Configure scope for fast multi-channel capture
+            # Configure scope for fast multi-channel capture using the watcher
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
             self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+
+            total_window = PRE_START + dur + POST_STOP
+            self.expected_samples = int(total_window / self.ts)
 
             sample_idx = 0
             run_sent = False
@@ -408,8 +439,6 @@ class MotorLoggerGUI:
 
                 if self.scope.scope_ready():
                     chans = self.scope.get_scope_data()
-                    self.scope.request_scope_data()          # <- leave here
-
                     if chans:
                         n = len(next(iter(chans.values())))  # all lists are equal
 
@@ -435,6 +464,10 @@ class MotorLoggerGUI:
                 time.sleep(self.ts / 10)
         finally:
             try:
+                self.scope.stop_watch()
+            except Exception:
+                pass
+            try:
                 if self.root.winfo_exists():
                     self.root.after(0, self._worker_done)
             except tk.TclError:
@@ -446,6 +479,17 @@ class MotorLoggerGUI:
 
         if self.data.get("t"):
             t_len = len(self.data["t"])
+
+            expected = getattr(self, "expected_samples", None)
+            if expected:
+                tol = max(1, int(expected * 0.05))
+                if abs(t_len - expected) > tol:
+                    messagebox.showwarning(
+                        "Timing mismatch",
+                        f"Expected {expected} samples but captured {t_len}.\n"
+                        "The recorded data may be incomplete.",
+                    )
+
             for k in list(self.data.keys()):
                 if k == "t":
                     continue
