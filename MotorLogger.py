@@ -57,6 +57,7 @@ if USE_SCOPE:
 # ``MIN_DELAY_MS``.
 DEFAULT_ENFORCE_SAMPLE_LIMIT = True
 MIN_DELAY_MS = 1  # minimum sample interval in ms
+PWM_BASE_HZ = 20_000.0  # PWM base frequency used by set_sample_time
 
 # ─── Variable paths we want to log ───────────────────────────────────────────
 VAR_PATHS = {
@@ -108,10 +109,32 @@ class _ScopeWrapper:
             self._scope = None
 
     # Scope channel helpers -------------------------------------------------
-    def prepare_scope(self, vars: List[object], sample_ms: int):
-        """Configure scope channels and sampling interval."""
+    def set_sample_rate(self, desired_hz: float) -> tuple[int, float, float]:
+        """
+        Compute decimation factor ``f`` for the desired sample rate, program the
+        scope and confirm the effective timing.
+
+        Returns ``(f, fs_actual, ts_actual)`` where ``fs_actual`` is in Hz and
+        ``ts_actual`` in seconds.
+        """
+        ts = 1.0 / desired_hz
         if not USE_SCOPE or self._scope is None:
-            return
+            return 0, desired_hz, ts
+        f = max(int(round(PWM_BASE_HZ / desired_hz)) - 1, 0)
+        self._scope.set_sample_time(f)
+        try:
+            ts_us = self._scope.get_scope_sample_time()
+        except AttributeError:
+            ts_us = (f + 1) * (1_000_000.0 / PWM_BASE_HZ)
+        ts = ts_us / 1_000_000.0
+        fs_actual = 1.0 / ts
+        return f, fs_actual, ts
+
+    def prepare_scope(self, vars: List[object], sample_ms: int) -> tuple[int, float, float]:
+        """Configure scope channels and sampling interval."""
+        desired_hz = 1000.0 / max(sample_ms, 1)
+        if not USE_SCOPE or self._scope is None:
+            return 0, desired_hz, 1.0 / desired_hz
         # pyX2Cscope renamed this helper in newer releases
         if hasattr(self._scope, "clear_scope_channels"):
             self._scope.clear_scope_channels()
@@ -120,13 +143,10 @@ class _ScopeWrapper:
         elif hasattr(self._scope, "clear_all_scope_channels"):
             self._scope.clear_all_scope_channels()
         for idx, var in enumerate(vars):
-            ch = self._scope.add_scope_channel(var)
-        # Convert desired interval (ms) to prescaler using 50 µs base period
-        base_us = 50.0
-        desired_us = max(int(sample_ms), 1) * 1000
-        prescaler = max(int(round(desired_us / base_us)) - 1, 0)
-        self._scope.set_sample_time(prescaler)
+            self._scope.add_scope_channel(var)
+        f, fs_actual, ts_actual = self.set_sample_rate(desired_hz)
         self._scope.request_scope_data()
+        return f, fs_actual, ts_actual
 
     def scope_ready(self) -> bool:
         if not USE_SCOPE or self._scope is None:
@@ -392,7 +412,14 @@ class MotorLoggerGUI:
 
             # Configure scope for fast multi-channel capture
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
-            self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
+            f, fs_actual, ts_actual = self.scope.prepare_scope(
+                vars_to_sample, int(self.ts * 1000)
+            )
+            self.ts = ts_actual
+            self.status.set(
+                f"Running + logging… Ts={ts_actual * 1000:.2f} ms "
+                f"(Fs={fs_actual:.1f} Hz, f={f})"
+            )
 
             sample_idx = 0
             run_sent = False
