@@ -47,15 +47,15 @@ except ImportError:  # pragma: no cover
     sio = None  # type: ignore
 
 # ─── Switch between real X2CScope and dummy backend ──────────────────────────
-# ``ScopeWatch`` is used to stream buffered samples from the target.  If the
-# library is not available we gracefully fall back to a dummy backend so the
-# GUI can still be launched without hardware.
+# The real hardware backend is provided by ``pyx2cscope``.  If the library is
+# not available we gracefully fall back to a dummy backend so the GUI can still
+# be launched without hardware attached.
 USE_SCOPE = True
 try:  # pragma: no cover - exercised only when pyx2cscope is present
-    from pyx2cscope.x2cscope import X2CScope, ScopeWatch
+    from pyx2cscope.x2cscope import X2CScope
 except Exception:  # pylint: disable=broad-except
     USE_SCOPE = False
-    X2CScope = ScopeWatch = object  # type: ignore
+    X2CScope = object  # type: ignore
 
 # ─── Sample interval limitations ----------------------------------------------
 # Scope channel logging supports capturing all enabled variables at 1 ms.
@@ -93,9 +93,9 @@ class _DummyVar:
 
 class _ScopeWrapper:
     """Hides real / dummy selection."""
+
     def __init__(self):
         self._scope: Union[X2CScope, None] = None
-        self._watch: ScopeWatch | None = None
 
     def connect(self, port: str, elf: str):
         if USE_SCOPE:
@@ -113,58 +113,37 @@ class _ScopeWrapper:
         if USE_SCOPE and self._scope:
             self._scope.disconnect()
             self._scope = None
-            self._watch = None
 
     # Scope channel helpers -------------------------------------------------
     def prepare_scope(self, vars: List[object], sample_ms: int):
-        """Configure ScopeWatch with buffered streaming.
-
-        Using ``ScopeWatch`` ensures the firmware-side circular buffer is used
-        which prevents gaps in the capture even at high sample rates.  The
-        watcher is kept internally and queried by ``scope_ready`` and
-        ``get_scope_data``.
-        """
+        """Configure scope channels and sampling interval."""
         if not USE_SCOPE or self._scope is None:
             return None
-
-        self._watch = ScopeWatch(
-            self._scope,
-            channels=vars,
-            sample_time=sample_ms,
-            buffer_method=True,
-        )
-        self._watch.start()
-        return self._watch
+        # pyX2Cscope renamed the clearing helper across releases; try a few.
+        if hasattr(self._scope, "clear_scope_channels"):
+            self._scope.clear_scope_channels()
+        elif hasattr(self._scope, "clear_all_scope_channel"):
+            self._scope.clear_all_scope_channel()
+        elif hasattr(self._scope, "clear_all_scope_channels"):
+            self._scope.clear_all_scope_channels()
+        for var in vars:
+            self._scope.add_scope_channel(var)
+        self._scope.set_sample_time(sample_ms)
+        self._scope.request_scope_data()
 
     def scope_ready(self) -> bool:
-        if not USE_SCOPE or self._watch is None:
+        if not USE_SCOPE or self._scope is None:
             return False
-        return bool(getattr(self._watch, "is_data_ready", lambda: False)())
+        return bool(self._scope.is_scope_data_ready())
 
     def get_scope_data(self):
-        if not USE_SCOPE or self._watch is None:
+        if not USE_SCOPE or self._scope is None:
             return {}
-        # ``ScopeWatch`` exposes a ``read`` method returning all accumulated
-        # channel data since the last call.
-        if hasattr(self._watch, "read"):
-            return self._watch.read()
-        if hasattr(self._watch, "get_data"):
-            return self._watch.get_data()  # type: ignore[attr-defined]
-        return {}
+        return self._scope.get_scope_channel_data(valid_data=False)
 
     def request_scope_data(self):
-        # With ``ScopeWatch`` there is no explicit request step – data is
-        # buffered automatically on the target.  This method is kept for
-        # compatibility with the previous polling API.
-        return None
-
-    def stop_watch(self):
-        if USE_SCOPE and self._watch is not None:
-            try:
-                if hasattr(self._watch, "stop"):
-                    self._watch.stop()
-            finally:
-                self._watch = None
+        if USE_SCOPE and self._scope:
+            self._scope.request_scope_data()
 
 # ─── Main GUI ────────────────────────────────────────────────────────────────
 class MotorLoggerGUI:
@@ -414,7 +393,7 @@ class MotorLoggerGUI:
             stop_cmd_time = run_cmd_time + dur
             end_time = stop_cmd_time + POST_STOP
 
-            # Configure scope for fast multi-channel capture using the watcher
+            # Configure scope for fast multi-channel capture
             vars_to_sample = [self.mon_vars[k] for k in self.selected_vars]
             self.scope.prepare_scope(vars_to_sample, int(self.ts * 1000))
 
@@ -439,6 +418,7 @@ class MotorLoggerGUI:
 
                 if self.scope.scope_ready():
                     chans = self.scope.get_scope_data()
+                    self.scope.request_scope_data()          # start next capture
                     if chans:
                         n = len(next(iter(chans.values())))  # all lists are equal
 
@@ -463,10 +443,6 @@ class MotorLoggerGUI:
 
                 time.sleep(self.ts / 10)
         finally:
-            try:
-                self.scope.stop_watch()
-            except Exception:
-                pass
             try:
                 if self.root.winfo_exists():
                     self.root.after(0, self._worker_done)
