@@ -7,6 +7,7 @@ Reverted connection flow to X2CScope(port=...) + import_variables(elf)
 • Serial port dropdown + Refresh (pyserial)
 • Correct sampling: set_sample_time(f), Fs = 20_000 / f (PWM ISR stays at 20 kHz)
 • Linked Desired Hz ↔ f; shows Actual Fs (Hz & kHz) and Ts (ms)
+• Desired Hz is the target sample rate, f divides 20kHz (Fs = 20kHz/f), Duration sets capture length
 • Live feasibility panel (UART throughput, total size, risk bullets)
 • “Ready double-check” after first ready=True before reading
 • Read-time sanity check vs UART capacity estimate
@@ -301,19 +302,22 @@ class MotorLoggerGUI:
         self.scale_entry = ttk.Entry(parms, width=12); self.scale_entry.insert(0, "0.19913")
         self.scale_entry.grid(row=1, column=1, padx=6, pady=2); self._lock_widgets.append(self.scale_entry)
 
-        ttk.Label(parms, text="Duration (s):").grid(row=2, column=0, sticky="e")
+        # Duration of the capture window in seconds
+        ttk.Label(parms, text="Capture duration (s):").grid(row=2, column=0, sticky="e")
         self.duration_e = ttk.Entry(parms, width=12); self.duration_e.insert(0, "10")
         self.duration_e.grid(row=2, column=1, padx=6, pady=2); self._lock_widgets.append(self.duration_e)
 
-        # Sample rate controls: Desired Hz <-> f, Actual Fs (Hz/kHz) and Ts (ms)
-        ttk.Label(parms, text="Desired Hz:").grid(row=3, column=0, sticky="e")
+        # Desired sample rate and the equivalent divisor f (Fs = PWM_HZ / f)
+        ttk.Label(parms, text="Desired sample rate (Hz):").grid(row=3, column=0, sticky="e")
         self.hz_e = ttk.Entry(parms, width=12); self.hz_e.insert(0, "2000")
         self.hz_e.grid(row=3, column=1, padx=6, pady=2); self._lock_widgets.append(self.hz_e)
-        self.hz_e.bind("<KeyRelease>", lambda e: self._hz_to_f())
+        self.hz_e.bind("<KeyRelease>", lambda e: self._hz_to_f())  # update f when Hz changes
 
-        ttk.Label(parms, text="or f = 20k/Hz:").grid(row=3, column=2, sticky="e")
+        ttk.Label(parms, text="Divisor f (Fs=20kHz/f):").grid(row=3, column=2, sticky="e")
         self.f_var = tk.IntVar(value=10)
-        self.f_spin = ttk.Spinbox(parms, from_=1, to=10000, width=10, textvariable=self.f_var, command=self._f_to_hz)
+        self.f_spin = ttk.Spinbox(
+            parms, from_=1, to=10000, width=10, textvariable=self.f_var, command=self._f_to_hz
+        )  # update desired Hz when f changes
         self.f_spin.grid(row=3, column=3, padx=6, pady=2); self._lock_widgets.append(self.f_spin)
         self.fs_label = ttk.Label(parms, text="Actual Fs: 2,000 Hz (2.000 kHz), Ts: 0.500 ms")
         self.fs_label.grid(row=3, column=4, sticky="w")
